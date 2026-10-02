@@ -817,7 +817,7 @@ index 227a45c6b3e..8d3c664c822 100644
      countStatsPostSILOpt(*stats, *silModule);
  
 diff --git a/lib/FrontendTool/FrontendTool.cpp b/lib/FrontendTool/FrontendTool.cpp
-index bbc2d990404..2c6edc40737 100644
+index bbc2d990404..4adfe9fbd2d 100644
 --- a/lib/FrontendTool/FrontendTool.cpp
 +++ b/lib/FrontendTool/FrontendTool.cpp
 @@ -96,6 +96,7 @@
@@ -841,7 +841,7 @@ index bbc2d990404..2c6edc40737 100644
  
  using namespace swift;
  
-@@ -2148,6 +2152,329 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
+@@ -2148,6 +2152,337 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
    Instance.freeASTContext();
  }
  
@@ -947,14 +947,22 @@ index bbc2d990404..2c6edc40737 100644
 +static std::string rewriteAIRToTypedPointers(StringRef textRef) {
 +  std::string text = textRef.str();
 +
-+  // Only reconstruct typed pointers when the module has a constant-address-space
-+  // global (`addrspace(2) constant`). Opaque pointers work for device-buffer and
-+  // texture kernels, but a program-scope constant global forces the driver's
-+  // back-end down a path that needs the whole module typed (see docs/emit-air.md
-+  // + docs/textures.md). Typing must be all-or-nothing — a half-typed module
-+  // (e.g. typed loads + opaque `air.*` intrinsic operands) is rejected by
-+  // metal-as — so leave modules without a constant global fully opaque.
-+  if (text.find("addrspace(2) constant") == std::string::npos)
++  // Only reconstruct typed pointers when the module needs them. Opaque pointers
++  // work for plain device-buffer and texture kernels, but two things force the
++  // driver's back-end down a path that needs the whole module typed:
++  //   (a) a program-scope constant-address-space global (`addrspace(2) constant`,
++  //       e.g. `let table: InlineArray<N,Float> = [...]`); and
++  //   (b) a SIMD-group intrinsic (`air.simd_*` reductions/shuffles, or the
++  //       `air.simdgroup_matrix_*` family) — the driver's bitcode upgrader for
++  //       these rejects an opaque module with "Failed to upgrade function
++  //       bitcode" (verified against the real metal compiler's output, which is
++  //       fully typed). `@air.simd` covers both prefixes.
++  // Typing must be all-or-nothing — a half-typed module (e.g. typed loads +
++  // opaque `air.*` intrinsic operands) is rejected by metal-as — so leave
++  // modules that need neither fully opaque (see docs/emit-air.md + docs/textures.md).
++  bool hasConstantGlobal = text.find("addrspace(2) constant") != std::string::npos;
++  bool hasSIMDIntrinsic = text.find("@air.simd") != std::string::npos;
++  if (!hasConstantGlobal && !hasSIMDIntrinsic)
 +    return text;
 +
 +  std::vector<std::string> lines;
@@ -1171,7 +1179,7 @@ index bbc2d990404..2c6edc40737 100644
  static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
                           llvm::Module *IRModule,
                           llvm::GlobalVariable *HashGlobal) {
-@@ -2174,10 +2501,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
+@@ -2174,10 +2509,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
      return true;
  
    // Now that we have a single IR Module, hand it over to performLLVM.
