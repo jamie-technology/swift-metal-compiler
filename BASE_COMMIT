@@ -1,0 +1,4 @@
+# apple/swift base this patch applies against
+commit: 83c32e02f71e4bbe5745f326cc1276f0c721e625
+snapshot-tag: swift-DEVELOPMENT-SNAPSHOT-2026-06-24-a
+describe: swift-DEVELOPMENT-SNAPSHOT-2026-06-24-a-657-g83c32e02f71

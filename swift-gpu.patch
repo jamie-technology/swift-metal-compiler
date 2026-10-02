@@ -1,0 +1,2963 @@
+diff --git a/include/swift/AST/Attr.h b/include/swift/AST/Attr.h
+index 4259916d6e9..eede853db94 100644
+--- a/include/swift/AST/Attr.h
++++ b/include/swift/AST/Attr.h
+@@ -196,6 +196,12 @@ protected:
+       Value : 32
+     );
+ 
++    SWIFT_INLINE_BITFIELD_FULL(BindingAttr, DeclAttribute, 32,
++      : NumPadBits,
++      // The resource slot index (swift-metal).
++      Index : 32
++    );
++
+     SWIFT_INLINE_BITFIELD(AvailableAttr, DeclAttribute, 4+1+1+1+1+1+1+1,
+       /// An `AvailableAttr::Kind` value.
+       Kind : 4,
+@@ -833,6 +839,30 @@ public:
+   }
+ };
+ 
++/// Defines the @Binding(to:) attribute (swift-metal): binds a GPU kernel
++/// parameter to a numbered resource slot.
++class BindingAttr : public DeclAttribute {
++public:
++  BindingAttr(unsigned Index, SourceLoc AtLoc, SourceRange Range, bool Implicit)
++      : DeclAttribute(DeclAttrKind::Binding, AtLoc, Range, Implicit) {
++    Bits.BindingAttr.Index = Index;
++  }
++
++  unsigned getIndex() const { return Bits.BindingAttr.Index; }
++
++  static bool classof(const DeclAttribute *DA) {
++    return DA->getKind() == DeclAttrKind::Binding;
++  }
++
++  BindingAttr *clone(ASTContext &ctx) const {
++    return new (ctx) BindingAttr(getIndex(), AtLoc, Range, isImplicit());
++  }
++
++  bool isEquivalent(const BindingAttr *other, Decl *attachedTo) const {
++    return getIndex() == other->getIndex();
++  }
++};
++
+ /// Defines the @_swift_native_objc_runtime_base attribute.
+ ///
+ /// This attribute indicates a class that should be treated semantically
+diff --git a/include/swift/AST/DeclAttr.def b/include/swift/AST/DeclAttr.def
+index a43e267815b..dcf01b6fef8 100644
+--- a/include/swift/AST/DeclAttr.def
++++ b/include/swift/AST/DeclAttr.def
+@@ -933,7 +933,62 @@ DECL_ATTR(com, COM,
+   ABIBreakingToAdd | ABIBreakingToRemove | APIBreakingToAdd | APIBreakingToRemove | ForbiddenInABIAttr,
+   176)
+ 
+-LAST_DECL_ATTR(COM)
++// swift-metal: GPU kernel attributes.
++// @Compute marks a function as a GPU compute kernel entry point.
++SIMPLE_DECL_ATTR(Compute, Compute,
++  OnFunc,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  177)
++// Hardware thread/grid builtins, applied to scalar kernel parameters.
++SIMPLE_DECL_ATTR(ThreadPositionInGrid, ThreadPositionInGrid,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  178)
++SIMPLE_DECL_ATTR(ThreadPositionInThreadgroup, ThreadPositionInThreadgroup,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  179)
++SIMPLE_DECL_ATTR(ThreadgroupPositionInGrid, ThreadgroupPositionInGrid,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  180)
++SIMPLE_DECL_ATTR(ThreadIndexInThreadgroup, ThreadIndexInThreadgroup,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  181)
++SIMPLE_DECL_ATTR(ThreadsPerThreadgroup, ThreadsPerThreadgroup,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  182)
++SIMPLE_DECL_ATTR(ThreadgroupsPerGrid, ThreadgroupsPerGrid,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  183)
++// @Binding(to: N) binds a pointer kernel parameter to resource slot N.
++DECL_ATTR(Binding, Binding,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  184)
++// GPU address-space qualifiers on pointer params/vars: device=1, constant=2,
++// threadgroup=3, thread=0 (default). Applied to the pointer's type in Sema.
++SIMPLE_DECL_ATTR(Device, Device,
++  OnParam | OnVar,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  185)
++SIMPLE_DECL_ATTR(Constant, Constant,
++  OnParam | OnVar,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  186)
++SIMPLE_DECL_ATTR(Threadgroup, Threadgroup,
++  OnParam | OnVar,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  187)
++SIMPLE_DECL_ATTR(Thread, Thread,
++  OnParam | OnVar,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  188)
++
++LAST_DECL_ATTR(Thread)
+ 
+ #undef DECL_ATTR_ALIAS
+ #undef CONTEXTUAL_DECL_ATTR_ALIAS
+diff --git a/include/swift/AST/DiagnosticsFrontend.def b/include/swift/AST/DiagnosticsFrontend.def
+index b207967850d..dcd17e81cc7 100644
+--- a/include/swift/AST/DiagnosticsFrontend.def
++++ b/include/swift/AST/DiagnosticsFrontend.def
+@@ -530,6 +530,11 @@ GROUPED_ERROR(error_wrong_input_num_for_input_file_key, CompilationCaching, none
+ ERROR(error_gen_reproducer_not_caching, none, "-gen-reproducer only supports swift caching (-cache-compile-job)", ())
+ ERROR(error_cannot_create_reproducer_dir, none, "failed to create reproducer director '%0': %1", (StringRef, StringRef))
+ 
++// swift-metal
++ERROR(error_gpu_metallib_tool_failed, none,
++      "failed to build .metallib: '%0' could not be run or returned an error "
++      "(is the Metal toolchain installed?)", (StringRef))
++
+ NOTE(note_reproducer, none, "reproducer is available at: %0", (StringRef))
+ 
+ // Dependency Verifier Diagnostics
+diff --git a/include/swift/AST/DiagnosticsParse.def b/include/swift/AST/DiagnosticsParse.def
+index 7ef4b5a53cb..d4d98a68cc1 100644
+--- a/include/swift/AST/DiagnosticsParse.def
++++ b/include/swift/AST/DiagnosticsParse.def
+@@ -1585,6 +1585,10 @@ ERROR(attr_com_unknown_threading_model, none,
+ ERROR(alignment_must_be_positive_integer,none,
+       "alignment value must be a positive integer literal", ())
+ 
++// swift-metal
++ERROR(binding_index_must_be_integer,none,
++      "@Binding slot must be an integer literal", ())
++
+ // Access control
+ ERROR(attr_access_expected_set,none,
+       "expected 'set' as subject of '%0' modifier", (StringRef))
+diff --git a/include/swift/AST/DiagnosticsSema.def b/include/swift/AST/DiagnosticsSema.def
+index 65d88c6fa06..eabf1e2e398 100644
+--- a/include/swift/AST/DiagnosticsSema.def
++++ b/include/swift/AST/DiagnosticsSema.def
+@@ -9443,6 +9443,29 @@ ERROR(unsafe_self_dependent_result_attr_on_invalid_decl,none,
+ 
+ REMARK(macro_expansion_line, none, "macro content: |%0|", (StringRef))
+ 
++//===----------------------------------------------------------------------===//
++// MARK: swift-metal — GPU-safe subset enforcement
++//===----------------------------------------------------------------------===//
++ERROR(gpu_kernel_effect, none,
++      "GPU %0 %1 cannot be '%2': the GPU has no runtime for it",
++      (StringRef, DeclName, StringRef))
++ERROR(gpu_kernel_nonvoid, none,
++      "GPU %0 %1 must return Void", (StringRef, DeclName))
++ERROR(gpu_unsafe_construct, none,
++      "%0 is not available in GPU code: %1",
++      (StringRef, StringRef))
++NOTE(gpu_unsafe_in_kernel, none,
++     "in GPU %0 %1", (StringRef, DeclName))
++ERROR(gpu_unsafe_sil, none,
++      "%0 is not available in GPU code", (StringRef))
++ERROR(gpu_recursion, none,
++      "recursion is not available in GPU code (no call stack)", ())
++NOTE(gpu_reached_from_kernel, none,
++     "reached from GPU kernel '%0'%1", (StringRef, StringRef))
++ERROR(gpu_unavailable_symbol, none,
++      "GPU kernel code calls '%0', which has no GPU implementation "
++      "(a runtime/standard-library function)", (StringRef))
++
+ GROUPED_WARNING(oslog_missing_string_section,OSLog,none,
+                 "global variable 'osLogStringSectionName' is missing from the 'os' module; defaulting to '__TEXT,__oslogstring,cstring_literals'", ())
+ GROUPED_ERROR(oslog_string_section_not_literal,OSLog,none,
+diff --git a/include/swift/AST/IRGenOptions.h b/include/swift/AST/IRGenOptions.h
+index 241e8a4a5c6..fea69238c48 100644
+--- a/include/swift/AST/IRGenOptions.h
++++ b/include/swift/AST/IRGenOptions.h
+@@ -359,6 +359,15 @@ public:
+   /// Whether we're generating IR for the JIT.
+   unsigned UseJIT : 1;
+ 
++  /// swift-metal: emit Apple AIR for GPU compute kernels — after optimization,
++  /// normalize the module (AIR triple/datalayout, strip GEP nuw, expand splat
++  /// constants, strip swiftcc, !swiftgpu.kernels -> air.*).
++  unsigned EmitGPUDeviceIR : 1;
++
++  /// swift-metal: after emitting AIR, invoke metal-as/metallib to produce a
++  /// loadable .metallib at the output path (-emit-metallib).
++  unsigned EmitGPUMetallib : 1;
++
+   /// Whether we should run LLVM optimizations after IRGen.
+   unsigned DisableLLVMOptzns : 1;
+ 
+@@ -659,6 +668,7 @@ public:
+         DebugInfoLevel(IRGenDebugInfoLevel::None),
+         DebugInfoFormat(IRGenDebugInfoFormat::None),
+         DisableClangModuleSkeletonCUs(false), UseJIT(false),
++        EmitGPUDeviceIR(false), EmitGPUMetallib(false),
+         DisableLLVMOptzns(false), DisableSwiftSpecificLLVMOptzns(false),
+         Playground(false), EmitStackPromotionChecks(false),
+         UseSingleModuleLLVMEmission(false), FunctionSections(false),
+diff --git a/include/swift/AST/TypeDifferenceVisitor.h b/include/swift/AST/TypeDifferenceVisitor.h
+index 462817b8d34..27939f5f76d 100644
+--- a/include/swift/AST/TypeDifferenceVisitor.h
++++ b/include/swift/AST/TypeDifferenceVisitor.h
+@@ -199,6 +199,15 @@ public:
+     return asImpl().visit(type1.getReferentType(), type2.getReferentType());
+   }
+ 
++  // swift-metal: a GPU-address-space pointer differs if its address space or its
++  // underlying pointer type differs.
++  bool visitAddressSpaceType(CanAddressSpaceType type1,
++                             CanAddressSpaceType type2) {
++    if (type1->getAddressSpace() != type2->getAddressSpace())
++      return asImpl().visitDifferentTypeStructure(type1, type2);
++    return asImpl().visit(type1.getObjectType(), type2.getObjectType());
++  }
++
+   bool visitUnboundGenericType(CanUnboundGenericType type1,
+                                CanUnboundGenericType type2) {
+     assert(type1->getDecl() != type2->getDecl());
+diff --git a/include/swift/AST/TypeMatcher.h b/include/swift/AST/TypeMatcher.h
+index f92e91043f7..d123800e743 100644
+--- a/include/swift/AST/TypeMatcher.h
++++ b/include/swift/AST/TypeMatcher.h
+@@ -518,6 +518,19 @@ private:
+       return mismatch(firstInOut.getPointer(), secondType, sugaredFirstType);
+     }
+ 
++    bool visitAddressSpaceType(CanAddressSpaceType firstAS, Type secondType,
++                               Type sugaredFirstType) {
++      if (auto secondAS = secondType->getAs<AddressSpaceType>()) {
++        if (firstAS->getAddressSpace() == secondAS->getAddressSpace())
++          return this->visit(firstAS.getObjectType(),
++                             secondAS->getObjectType(),
++                             sugaredFirstType->castTo<AddressSpaceType>()
++                               ->getObjectType());
++      }
++
++      return mismatch(firstAS.getPointer(), secondType, sugaredFirstType);
++    }
++
+     bool visitBoundGenericType(CanBoundGenericType firstBGT,
+                                Type secondType, Type sugaredFirstType) {
+       if (firstBGT->getKind() == secondType->getDesugaredType()->getKind()) {
+diff --git a/include/swift/AST/TypeNodes.def b/include/swift/AST/TypeNodes.def
+index 99b639f2c5f..a4e166bbf4b 100644
+--- a/include/swift/AST/TypeNodes.def
++++ b/include/swift/AST/TypeNodes.def
+@@ -205,6 +205,8 @@ TYPE(ParameterizedProtocol, Type)
+ TYPE(Existential, Type)
+ TYPE(LValue, Type)
+ TYPE(InOut, Type)
++// swift-metal: a pointer type carrying a GPU address space (device/constant/…).
++TYPE(AddressSpace, Type)
+ TYPE(Pack, Type)
+ TYPE(PackExpansion, Type)
+ TYPE(PackElement, Type)
+diff --git a/include/swift/AST/TypeTransform.h b/include/swift/AST/TypeTransform.h
+index 89915d3cd6c..7d57abd4aea 100644
+--- a/include/swift/AST/TypeTransform.h
++++ b/include/swift/AST/TypeTransform.h
+@@ -1058,6 +1058,16 @@ case TypeKind::Id:
+         t : InOutType::get(objectTy);
+     }
+ 
++    case TypeKind::AddressSpace: {
++      auto addrSpace = cast<AddressSpaceType>(base);
++      auto objectTy = doIt(addrSpace->getObjectType(), pos);
++      if (!objectTy || objectTy->hasError())
++        return objectTy;
++
++      return objectTy.getPointer() == addrSpace->getObjectType().getPointer() ?
++        t : AddressSpaceType::get(objectTy, addrSpace->getAddressSpace());
++    }
++
+     case TypeKind::Existential: {
+       auto *existential = cast<ExistentialType>(base);
+       auto constraint = doIt(existential->getConstraintType(), pos);
+diff --git a/include/swift/AST/Types.h b/include/swift/AST/Types.h
+index 3c581c7a670..0a9688f8c1e 100644
+--- a/include/swift/AST/Types.h
++++ b/include/swift/AST/Types.h
+@@ -7104,6 +7104,37 @@ static CanInOutType get(CanType type) {
+ }
+ END_CAN_TYPE_WRAPPER(InOutType, Type)
+ 
++/// AddressSpaceType - a pointer type qualified with a GPU address space
++/// (swift-metal). Wraps a pointer object type (e.g. UnsafePointer<Float>) and
++/// tags it with an LLVM address space (device=1, constant=2, threadgroup=3,
++/// thread=0), making it a distinct type so IRGen lowers it to `ptr addrspace(N)`.
++class AddressSpaceType : public TypeBase {
++  Type ObjectTy;
++  unsigned TheAddressSpace;
++
++  AddressSpaceType(Type objectTy, unsigned addressSpace,
++                   const ASTContext *canonicalContext,
++                   RecursiveTypeProperties properties)
++    : TypeBase(TypeKind::AddressSpace, canonicalContext, properties),
++      ObjectTy(objectTy), TheAddressSpace(addressSpace) {}
++
++public:
++  static AddressSpaceType *get(Type type, unsigned addressSpace);
++
++  Type getObjectType() const { return ObjectTy; }
++  unsigned getAddressSpace() const { return TheAddressSpace; }
++
++  static bool classof(const TypeBase *type) {
++    return type->getKind() == TypeKind::AddressSpace;
++  }
++};
++BEGIN_CAN_TYPE_WRAPPER(AddressSpaceType, Type)
++  PROXY_CAN_TYPE_SIMPLE_GETTER(getObjectType)
++  static CanAddressSpaceType get(CanType type, unsigned addressSpace) {
++    return CanAddressSpaceType(AddressSpaceType::get(type, addressSpace));
++  }
++END_CAN_TYPE_WRAPPER(AddressSpaceType, Type)
++
+ 
+ /// SubstitutableType - A reference to a type that can be substituted, i.e.,
+ /// an archetype or a generic parameter.
+diff --git a/include/swift/Option/Options.td b/include/swift/Option/Options.td
+index 7b2180864bf..726ab37997a 100644
+--- a/include/swift/Option/Options.td
++++ b/include/swift/Option/Options.td
+@@ -1445,6 +1445,10 @@ def emit_irgen : Flag<["-"], "emit-irgen">,
+   HelpText<"Emit LLVM IR file(s) before LLVM optimizations">, ModeOpt;
+ def emit_ir : Flag<["-"], "emit-ir">,
+   HelpText<"Emit LLVM IR file(s) after LLVM optimizations">, ModeOpt;
++def emit_air : Flag<["-"], "emit-air">,
++  HelpText<"Emit textual Apple AIR for GPU compute kernels (swift-metal)">, ModeOpt;
++def emit_metallib : Flag<["-"], "emit-metallib">,
++  HelpText<"Emit a loadable Metal library (.metallib) from GPU compute kernels (swift-metal)">, ModeOpt;
+ def emit_sil : Flag<["-"], "emit-sil">,
+   HelpText<"Emit canonical SIL file(s)">, ModeOpt;
+ def emit_silgen : Flag<["-"], "emit-silgen">,
+diff --git a/include/swift/SIL/SILCloner.h b/include/swift/SIL/SILCloner.h
+index 24c2b37e5c1..8979c8dfa25 100644
+--- a/include/swift/SIL/SILCloner.h
++++ b/include/swift/SIL/SILCloner.h
+@@ -2945,6 +2945,15 @@ SILCloner<ImplClass>::visitWitnessMethodInst(WitnessMethodInst *Inst) {
+   auto conformance = getOpConformance(Inst->getConformance());
+   auto lookupType = getOpASTType(Inst->getLookupType());
+ 
++  // swift-metal: a GPU address-space qualifier on the lookup type — Self is a
++  // device-qualified value, e.g. `device SIMD4<Float>` when a SIMD protocol-
++  // extension method is inlined into a kernel operating on values loaded from a
++  // device pointer — is transparent to witness dispatch. The conformance is the
++  // unqualified type's; strip the qualifier so the lookup type matches its
++  // concrete conforming type (the qualifier drops at lowering anyway).
++  if (auto asTy = dyn_cast<AddressSpaceType>(lookupType))
++    lookupType = asTy->getObjectType()->getCanonicalType();
++
+   if (conformance.isConcrete()) {
+     auto conformingType = conformance.getConcrete()->getType()->getCanonicalType();
+ 
+diff --git a/include/swift/SILOptimizer/PassManager/Passes.h b/include/swift/SILOptimizer/PassManager/Passes.h
+index 9f9a9a6242c..61a9b2937a4 100644
+--- a/include/swift/SILOptimizer/PassManager/Passes.h
++++ b/include/swift/SILOptimizer/PassManager/Passes.h
+@@ -39,6 +39,17 @@ namespace swift {
+   /// \returns true if the diagnostic passes produced an error
+   bool runSILDiagnosticPasses(SILModule &M, bool RunSILGenPasses=true);
+ 
++  /// swift-metal: reject GPU-unsafe constructs (heap allocation, recursion)
++  /// reachable from `@Compute` kernels. No-op if the module has no kernel.
++  /// Runs on canonical (pre-optimization) SIL; scans user code only.
++  void diagnoseGPUUnsafeConstructs(SILModule &M);
++
++  /// swift-metal: the airtight post-`-O` backstop — after inlining/DCE, flag any
++  /// surviving heap allocation or call to an external non-`air` function
++  /// (unresolvable runtime/stdlib dependency) reachable from a kernel. No-op if
++  /// the module has no kernel.
++  void diagnoseGPUUnsafePostOpt(SILModule &M);
++
+   /// Run all the SIL performance optimization passes on \p M.
+   void runSILOptimizationPasses(SILModule &M);
+ 
+diff --git a/lib/AST/ASTContext.cpp b/lib/AST/ASTContext.cpp
+index 0a0c21e28d6..a81e32ed92e 100644
+--- a/lib/AST/ASTContext.cpp
++++ b/lib/AST/ASTContext.cpp
+@@ -585,6 +585,7 @@ struct ASTContext::Implementation {
+     llvm::DenseMap<uintptr_t, ReferenceStorageType*> ReferenceStorageTypes;
+     llvm::DenseMap<Type, LValueType*> LValueTypes;
+     llvm::DenseMap<Type, InOutType*> InOutTypes;
++    llvm::DenseMap<std::pair<Type, unsigned>, AddressSpaceType*> AddressSpaceTypes;
+     llvm::DenseMap<std::pair<Type, void*>, DependentMemberType *>
+       DependentMemberTypes;
+     llvm::FoldingSet<ErrorUnionType> ErrorUnionTypes;
+@@ -5909,6 +5910,19 @@ BuiltinTupleType::BuiltinTupleType(BuiltinTupleDecl *TheDecl,
+   : NominalType(TypeKind::BuiltinTuple, &Ctx, TheDecl, Type(),
+                 RecursiveTypeProperties()) { }
+ 
++AddressSpaceType *AddressSpaceType::get(Type objectTy, unsigned addressSpace) {
++  auto properties = objectTy->getRecursiveProperties();
++  auto arena = getArena(properties);
++  auto &C = objectTy->getASTContext();
++  auto &entry = C.getImpl().getArena(arena)
++                    .AddressSpaceTypes[{objectTy, addressSpace}];
++  if (entry)
++    return entry;
++  const ASTContext *canonicalContext = objectTy->isCanonical() ? &C : nullptr;
++  return entry = new (C, arena) AddressSpaceType(objectTy, addressSpace,
++                                                 canonicalContext, properties);
++}
++
+ LValueType *LValueType::get(Type objectTy) {
+   assert(!objectTy->is<LValueType>() && !objectTy->is<InOutType>() &&
+          "cannot have 'inout' or @lvalue wrapped inside an @lvalue");
+diff --git a/lib/AST/ASTDumper.cpp b/lib/AST/ASTDumper.cpp
+index bc023c6e456..5bbeede44fe 100644
+--- a/lib/AST/ASTDumper.cpp
++++ b/lib/AST/ASTDumper.cpp
+@@ -5192,6 +5192,18 @@ public:
+   TRIVIAL_ATTR_PRINTER(Nonexhaustive, nonexhaustive)
+   TRIVIAL_ATTR_PRINTER(Concurrent, concurrent)
+   TRIVIAL_ATTR_PRINTER(UnsafeSelfDependentResult, unsafe_self_dependent_result)
++  // swift-metal GPU attributes.
++  TRIVIAL_ATTR_PRINTER(Compute, compute)
++  TRIVIAL_ATTR_PRINTER(ThreadPositionInGrid, thread_position_in_grid)
++  TRIVIAL_ATTR_PRINTER(ThreadPositionInThreadgroup, thread_position_in_threadgroup)
++  TRIVIAL_ATTR_PRINTER(ThreadgroupPositionInGrid, threadgroup_position_in_grid)
++  TRIVIAL_ATTR_PRINTER(ThreadIndexInThreadgroup, thread_index_in_threadgroup)
++  TRIVIAL_ATTR_PRINTER(ThreadsPerThreadgroup, threads_per_threadgroup)
++  TRIVIAL_ATTR_PRINTER(ThreadgroupsPerGrid, threadgroups_per_grid)
++  TRIVIAL_ATTR_PRINTER(Device, device)
++  TRIVIAL_ATTR_PRINTER(Constant, constant)
++  TRIVIAL_ATTR_PRINTER(Threadgroup, threadgroup)
++  TRIVIAL_ATTR_PRINTER(Thread, thread)
+ 
+ #undef TRIVIAL_ATTR_PRINTER
+ 
+@@ -5205,6 +5217,11 @@ public:
+     printField(Attr->getAccess(), Label::always("access_level"));
+     printFoot();
+   }
++  void visitBindingAttr(BindingAttr *Attr, Label label) {
++    printCommon(Attr, "binding_attr", label);
++    printFoot();
++  }
++
+   void visitAlignmentAttr(AlignmentAttr *Attr, Label label) {
+     printCommon(Attr, "alignment_attr", label);
+     printField(Attr->getValue(), Label::always("value"));
+@@ -6918,6 +6935,13 @@ namespace {
+       printFoot();
+     }
+ 
++    void visitAddressSpaceType(AddressSpaceType *T, Label label) {
++      printCommon("address_space_type", label);
++      printField(T->getAddressSpace(), Label::always("address_space"));
++      printRec(T->getObjectType(), Label::optional("object_type"));
++      printFoot();
++    }
++
+     void visitUnboundGenericType(UnboundGenericType *T, Label label) {
+       printCommon("unbound_generic_type", label);
+       printFieldQuoted(T->getDecl()->printRef(), Label::always("decl"));
+diff --git a/lib/AST/ASTMangler.cpp b/lib/AST/ASTMangler.cpp
+index 502267b3b3e..1c45ce6d1ff 100644
+--- a/lib/AST/ASTMangler.cpp
++++ b/lib/AST/ASTMangler.cpp
+@@ -1683,6 +1683,11 @@ void ASTMangler::appendType(Type type, GenericSignature sig,
+       appendType(cast<InOutType>(tybase)->getObjectType(), sig, forDecl);
+       return appendOperator("z");
+ 
++    case TypeKind::AddressSpace:
++      // swift-metal Stage-1 stub: mangle transparently as the object pointer type.
++      return appendType(cast<AddressSpaceType>(tybase)->getObjectType(), sig,
++                        forDecl);
++
+ #define REF_STORAGE(Name, ...) \
+     case TypeKind::Name##Storage: \
+       appendType(cast<Name##StorageType>(tybase)->getReferentType(), sig, forDecl); \
+diff --git a/lib/AST/ASTPrinter.cpp b/lib/AST/ASTPrinter.cpp
+index 501a961b21b..4c27d2db592 100644
+--- a/lib/AST/ASTPrinter.cpp
++++ b/lib/AST/ASTPrinter.cpp
+@@ -7894,6 +7894,17 @@ public:
+     visit(T->getObjectType(), nrOptions);
+   }
+ 
++  void visitAddressSpaceType(AddressSpaceType *T,
++                             NonRecursivePrintOptions nrOptions) {
++    switch (T->getAddressSpace()) {
++    case 1: Printer << "device "; break;
++    case 2: Printer << "constant "; break;
++    case 3: Printer << "threadgroup "; break;
++    default: Printer << "thread "; break;
++    }
++    visit(T->getObjectType(), nrOptions);
++  }
++
+   void visitExistentialArchetypeType(ExistentialArchetypeType *T,
+                                      NonRecursivePrintOptions nrOptions) {
+     if (Options.PrintForSIL) {
+diff --git a/lib/AST/ASTVerifier.cpp b/lib/AST/ASTVerifier.cpp
+index 106bdd001ee..d9987007684 100644
+--- a/lib/AST/ASTVerifier.cpp
++++ b/lib/AST/ASTVerifier.cpp
+@@ -1970,7 +1970,8 @@ public:
+         abort();
+       }
+       Type ResultExprTy = E->getType();
+-      if (!ResultExprTy->isEqual(FT->getResult())) {
++      if (!ResultExprTy->isEqual(FT->getResult()) &&
++          !equalIgnoringAddressSpace(ResultExprTy, FT->getResult())) {
+         Out << "result of ApplyExpr does not match result type of callee:";
+         E->getType().print(Out);
+         Out << " vs. ";
+@@ -3700,8 +3701,25 @@ public:
+       abort();
+     }
+ 
++    // swift-metal: a GPU address-space qualifier (device/constant/threadgroup/
++    // thread) describes *storage*, not a value — it drops at SIL lowering, so
++    // `device T` and `T` are the same value type. Treat them as equal in the
++    // structural type-consistency checks below. AddressSpaceType only appears in
++    // GPU code, so this doesn't relax verification for ordinary programs. This is
++    // what lets a value loaded from a device pointer flow through generic
++    // operators/initializers and stores of computed values.
++    static bool equalIgnoringAddressSpace(Type T0, Type T1) {
++      auto strip = [](Type t) -> Type {
++        t = t->getWithoutSpecifierType();
++        while (auto *as = t->getAs<AddressSpaceType>())
++          t = as->getObjectType();
++        return t;
++      };
++      return strip(T0)->isEqual(strip(T1));
++    }
++
+     void checkSameType(Type T0, Type T1, const char *what) {
+-      if (T0->isEqual(T1))
++      if (T0->isEqual(T1) || equalIgnoringAddressSpace(T0, T1))
+         return;
+ 
+       Out << "different types for " << what << ": ";
+diff --git a/lib/AST/Attr.cpp b/lib/AST/Attr.cpp
+index 10eb4e3dae7..d53d8c13616 100644
+--- a/lib/AST/Attr.cpp
++++ b/lib/AST/Attr.cpp
+@@ -1209,6 +1209,11 @@ bool DeclAttribute::printImpl(ASTPrinter &Printer, const PrintOptions &Options,
+     Printer << "(" << cast<AlignmentAttr>(this)->getValue() << ")";
+     break;
+ 
++  case DeclAttrKind::Binding:
++    Printer.printAttrName("@Binding");
++    Printer << "(to: " << cast<BindingAttr>(this)->getIndex() << ")";
++    break;
++
+   case DeclAttrKind::AllowFeatureSuppression: {
+     auto Attr = cast<AllowFeatureSuppressionAttr>(this);
+     Printer.printAttrName(Attr->getInverted() ? "@_disallowFeatureSuppression"
+@@ -1945,6 +1950,8 @@ StringRef DeclAttribute::getAttrName() const {
+     return "_silgen_name";
+   case DeclAttrKind::Alignment:
+     return "_alignment";
++  case DeclAttrKind::Binding:
++    return "Binding";
+   case DeclAttrKind::CDecl:
+     if (cast<CDeclAttr>(this)->Underscored)
+       return "_cdecl";
+diff --git a/lib/AST/ConformanceLookup.cpp b/lib/AST/ConformanceLookup.cpp
+index cd3b3aa9c2b..1f22aed0326 100644
+--- a/lib/AST/ConformanceLookup.cpp
++++ b/lib/AST/ConformanceLookup.cpp
+@@ -205,6 +205,11 @@ ProtocolConformanceRef ProtocolConformanceRef::forMissingOrInvalid(
+ ProtocolConformanceRef swift::lookupConformance(Type type,
+                                                 ProtocolDecl *protocol,
+                                                 bool allowMissing) {
++  // swift-metal: an address-space-qualified type (`device Float`) conforms to a
++  // protocol exactly as its underlying type does — the qualifier is transparent.
++  if (auto *asTy = type->getAs<AddressSpaceType>())
++    return lookupConformance(asTy->getObjectType(), protocol, allowMissing);
++
+   auto &eval = protocol->getASTContext().evaluator;
+ 
+   // If we are recursively checking for implicit conformance of a nominal
+diff --git a/lib/AST/ExistentialGeneralization.cpp b/lib/AST/ExistentialGeneralization.cpp
+index 8f1309b5165..2ca999792fe 100644
+--- a/lib/AST/ExistentialGeneralization.cpp
++++ b/lib/AST/ExistentialGeneralization.cpp
+@@ -80,6 +80,11 @@ public:
+   }
+ 
+ private:
++  Type visitAddressSpaceType(CanAddressSpaceType type) {
++    return AddressSpaceType::get(visit(type.getObjectType()),
++                                 type->getAddressSpace());
++  }
++
+   Type visitProtocolType(CanProtocolType type) {
+     // Simple protocol types have no sub-structure.
+     return type;
+diff --git a/lib/AST/Type.cpp b/lib/AST/Type.cpp
+index 7f7f001c2e7..9a2734fa2f1 100644
+--- a/lib/AST/Type.cpp
++++ b/lib/AST/Type.cpp
+@@ -258,6 +258,7 @@ bool CanType::isReferenceTypeImpl(CanType type, const GenericSignatureImpl *sig,
+   case TypeKind::Module:
+   case TypeKind::LValue:
+   case TypeKind::InOut:
++  case TypeKind::AddressSpace:
+   case TypeKind::TypeVariable:
+   case TypeKind::Placeholder:
+   case TypeKind::BoundGenericEnum:
+@@ -2004,6 +2005,12 @@ CanType TypeBase::computeCanonicalType() {
+   case TypeKind::InOut:
+     Result = InOutType::get(getInOutObjectType()->getCanonicalType());
+     break;
++  case TypeKind::AddressSpace: {
++    auto *asTy = cast<AddressSpaceType>(this);
++    Result = AddressSpaceType::get(asTy->getObjectType()->getCanonicalType(),
++                                   asTy->getAddressSpace());
++    break;
++  }
+   case TypeKind::Function:
+   case TypeKind::GenericFunction: {
+     AnyFunctionType *funcTy = cast<AnyFunctionType>(this);
+@@ -4777,6 +4784,7 @@ ReferenceCounting TypeBase::getReferenceCounting() {
+   case TypeKind::Module:
+   case TypeKind::LValue:
+   case TypeKind::InOut:
++  case TypeKind::AddressSpace:
+   case TypeKind::TypeVariable:
+   case TypeKind::Placeholder:
+   case TypeKind::BoundGenericEnum:
+diff --git a/lib/AST/TypeSubstitution.cpp b/lib/AST/TypeSubstitution.cpp
+index c3856bf1869..8cff3f1887e 100644
+--- a/lib/AST/TypeSubstitution.cpp
++++ b/lib/AST/TypeSubstitution.cpp
+@@ -654,6 +654,13 @@ TypeBase::getContextSubstitutions(const DeclContext *dc,
+   assert(dc->isTypeContext());
+   Type baseTy(this);
+ 
++  // swift-metal: a GPU address-space qualifier (device/constant/threadgroup/
++  // thread) is transparent to member substitution — it qualifies storage, not
++  // the value, and drops at SIL lowering. Substitute members (e.g. a SIMD
++  // operator whose Self is `device SIMD4<Float>`) against the unqualified type.
++  if (auto *asTy = baseTy->getAs<AddressSpaceType>())
++    baseTy = asTy->getObjectType();
++
+   assert(!baseTy->is<LValueType>() &&
+          !baseTy->is<AnyMetatypeType>() &&
+          !baseTy->is<ErrorType>());
+diff --git a/lib/AST/TypeWalker.cpp b/lib/AST/TypeWalker.cpp
+index b38bb4fb2d8..ee1696808c4 100644
+--- a/lib/AST/TypeWalker.cpp
++++ b/lib/AST/TypeWalker.cpp
+@@ -233,6 +233,10 @@ class Traversal : public TypeVisitor<Traversal, bool>
+     return doIt(ty->getObjectType());
+   }
+ 
++  bool visitAddressSpaceType(AddressSpaceType *ty) {
++    return doIt(ty->getObjectType());
++  }
++
+   bool visitUnboundGenericType(UnboundGenericType *ty) {
+     if (auto parent = ty->getParent())
+       return doIt(parent);
+diff --git a/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift b/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
+index 59ea9c4e31a..bedc6d9c8e7 100644
+--- a/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
++++ b/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
+@@ -140,6 +140,11 @@ extension ASTGenVisitor {
+         return handle(self.generateCDeclAttr(attribute: node)?.asDeclAttribute)
+       case .COM:
+         return handle(self.generateCOMAttr(attribute: node)?.asDeclAttribute)
++      case .Binding:
++        // swift-metal: @Binding(to: N). The C++ parser (ParseDecl.cpp) handles
++        // this on the default frontend path. TODO: a swift-syntax generator with
++        // a BridgedBindingAttr bridge, for when ASTGen becomes the default parser.
++        return handle(nil)
+       case .Derivative:
+         return handle(self.generateDerivativeAttr(attribute: node)?.asDeclAttribute)
+       case .Differentiable:
+@@ -241,6 +246,18 @@ extension ASTGenVisitor {
+         .AddressableForDependencies,
+         .AlwaysEmitConformanceMetadata,
+         .AlwaysEmitIntoClient,
++        // swift-metal GPU attributes.
++        .Compute,
++        .ThreadPositionInGrid,
++        .ThreadPositionInThreadgroup,
++        .ThreadgroupPositionInGrid,
++        .ThreadIndexInThreadgroup,
++        .ThreadsPerThreadgroup,
++        .ThreadgroupsPerGrid,
++        .Device,
++        .Constant,
++        .Threadgroup,
++        .Thread,
+         .AtReasync,
+         .AtRethrows,
+         .Borrowed,
+diff --git a/lib/ClangImporter/ImportType.cpp b/lib/ClangImporter/ImportType.cpp
+index 2fd92493fbc..71b52dc2eb2 100644
+--- a/lib/ClangImporter/ImportType.cpp
++++ b/lib/ClangImporter/ImportType.cpp
+@@ -2186,6 +2186,7 @@ private:
+   VISIT(AnyMetatypeType, recurse)
+ 
+   VISIT(ModuleType, pass)
++  VISIT(AddressSpaceType, pass)
+   VISIT(DynamicSelfType, pass)
+ 
+   // Ignore attributes placed on generic parameter references and
+diff --git a/lib/Driver/Driver.cpp b/lib/Driver/Driver.cpp
+index 8a77a748fea..942625bb158 100644
+--- a/lib/Driver/Driver.cpp
++++ b/lib/Driver/Driver.cpp
+@@ -1196,6 +1196,14 @@ void Driver::buildOutputInfo(const ToolChain &TC, const DerivedArgList &Args,
+       OI.CompilerOutputType = file_types::TY_LLVM_IR;
+       break;
+ 
++    // swift-metal: -emit-air / -emit-metallib. AIR is textual LLVM IR, so both
++    // route through the LLVM_IR output type; the frontend mode is chosen in
++    // computeFrontendModeForCompile from the actual mode option.
++    case options::OPT_emit_air:
++    case options::OPT_emit_metallib:
++      OI.CompilerOutputType = file_types::TY_LLVM_IR;
++      break;
++
+     case options::OPT_emit_bc:
+       OI.CompilerOutputType = file_types::TY_LLVM_BC;
+       break;
+diff --git a/lib/Driver/ToolChains.cpp b/lib/Driver/ToolChains.cpp
+index 9dd5ad403e8..f5f05a1b013 100644
+--- a/lib/Driver/ToolChains.cpp
++++ b/lib/Driver/ToolChains.cpp
+@@ -1064,7 +1064,13 @@ ToolChain::constructInvocation(const BackendJobAction &job,
+       FrontendModeOption = "-emit-irgen";
+       break;
+     case file_types::TY_LLVM_IR:
+-      FrontendModeOption = "-emit-ir";
++      // swift-metal: forward the GPU AIR modes when the user asked for them.
++      if (context.Args.hasArg(options::OPT_emit_metallib))
++        FrontendModeOption = "-emit-metallib";
++      else if (context.Args.hasArg(options::OPT_emit_air))
++        FrontendModeOption = "-emit-air";
++      else
++        FrontendModeOption = "-emit-ir";
+       break;
+     case file_types::TY_LLVM_BC:
+       FrontendModeOption = "-emit-bc";
+diff --git a/lib/Frontend/ArgsToFrontendOptionsConverter.cpp b/lib/Frontend/ArgsToFrontendOptionsConverter.cpp
+index 8426e79cfac..4f72101bacc 100644
+--- a/lib/Frontend/ArgsToFrontendOptionsConverter.cpp
++++ b/lib/Frontend/ArgsToFrontendOptionsConverter.cpp
+@@ -664,6 +664,12 @@ ArgsToFrontendOptionsConverter::determineRequestedAction(const ArgList &args) {
+     return FrontendOptions::ActionType::EmitIRGen;
+   if (Opt.matches(OPT_emit_ir))
+     return FrontendOptions::ActionType::EmitIR;
++  // swift-metal: -emit-air reuses the EmitIR action; a GPU-mode IRGen bit (set
++  // from the same arg) makes the LLVM pipeline emit AIR-normalized textual IR.
++  if (Opt.matches(OPT_emit_air))
++    return FrontendOptions::ActionType::EmitIR;
++  if (Opt.matches(OPT_emit_metallib))
++    return FrontendOptions::ActionType::EmitIR;
+   if (Opt.matches(OPT_emit_bc))
+     return FrontendOptions::ActionType::EmitBC;
+   if (Opt.matches(OPT_emit_sil))
+diff --git a/lib/Frontend/CompilerInvocation.cpp b/lib/Frontend/CompilerInvocation.cpp
+index 7b2e279d073..b6fe3413ec7 100644
+--- a/lib/Frontend/CompilerInvocation.cpp
++++ b/lib/Frontend/CompilerInvocation.cpp
+@@ -3592,6 +3592,18 @@ static bool ParseIRGenArgs(IRGenOptions &Opts, ArgList &Args,
+                            const llvm::Triple &Triple) {
+   using namespace options;
+ 
++  // swift-metal: -emit-air / -emit-metallib reuse the EmitIR action plus these
++  // GPU-mode bits. -emit-metallib also emits AIR, then packages it.
++  Opts.EmitGPUDeviceIR = Args.hasArg(OPT_emit_air) || Args.hasArg(OPT_emit_metallib);
++  Opts.EmitGPUMetallib = Args.hasArg(OPT_emit_metallib);
++  // swift-metal: a GPU module has no Swift runtime — suppress reflection
++  // metadata (type descriptors, `__swift5_typeref` symbolic references, etc.),
++  // which metal-as can't parse and which user types (e.g. Texture2D) would emit.
++  if (Opts.EmitGPUDeviceIR) {
++    Opts.ReflectionMetadata = ReflectionMetadataMode::None;
++    Opts.EnableReflectionNames = false;
++  }
++
+   if (!SILOpts.SILOutputFileNameForDebugging.empty()) {
+       Opts.DebugInfoLevel = IRGenDebugInfoLevel::LineTables;
+   } else if (const Arg *A = Args.getLastArg(OPT_g_Group)) {
+diff --git a/lib/Frontend/Frontend.cpp b/lib/Frontend/Frontend.cpp
+index 227a45c6b3e..8d3c664c822 100644
+--- a/lib/Frontend/Frontend.cpp
++++ b/lib/Frontend/Frontend.cpp
+@@ -1965,6 +1965,19 @@ bool CompilerInstance::performSILProcessing(SILModule *silModule) {
+ 
+   performSILOptimizations(Invocation, silModule);
+ 
++  // swift-metal: airtight GPU-safe backstop. On the fully-*optimized* SIL (only
++  // actually-reachable code remains), reject any surviving heap allocation or
++  // call to a runtime/stdlib function with no GPU implementation, reachable from
++  // a @Compute kernel — the case the pre-optimization check can't see (a
++  // non-inlined serialized stdlib dependency). Requires -O: only then is what
++  // remains what actually ships (at -Onone, un-inlined stdlib calls — e.g.
++  // trap thunks that become `llvm.trap` under -O — would false-positive). A
++  // working GPU build needs -O regardless, since un-inlined stdlib would emit
++  // undefined AIR symbols. The pre-O check still runs at -Onone.
++  if (Invocation.getIRGenOptions().EmitGPUDeviceIR &&
++      Invocation.getSILOptions().shouldOptimize())
++    diagnoseGPUUnsafePostOpt(*silModule);
++
+   if (auto *stats = getStatsReporter())
+     countStatsPostSILOpt(*stats, *silModule);
+ 
+diff --git a/lib/FrontendTool/FrontendTool.cpp b/lib/FrontendTool/FrontendTool.cpp
+index bbc2d990404..2c6edc40737 100644
+--- a/lib/FrontendTool/FrontendTool.cpp
++++ b/lib/FrontendTool/FrontendTool.cpp
+@@ -96,6 +96,7 @@
+ #include "llvm/Support/Error.h"
+ #include "llvm/Support/ErrorHandling.h"
+ #include "llvm/Support/FileSystem.h"
++#include "llvm/Support/Program.h"
+ #include "llvm/Support/JSON.h"
+ #include "llvm/Support/Path.h"
+ #include "llvm/Support/Process.h"
+@@ -109,9 +110,12 @@
+ #include <process.h>
+ #endif
+ #include <algorithm>
++#include <map>
+ #include <memory>
++#include <regex>
+ #include <unordered_set>
+ #include <utility>
++#include <vector>
+ 
+ using namespace swift;
+ 
+@@ -2148,6 +2152,329 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
+   Instance.freeASTContext();
+ }
+ 
++/// swift-metal: package the textual AIR at `airPath` into a loadable .metallib
++/// in place, by invoking `xcrun metal-as` then `xcrun metallib`.
++// swift-metal: textual reconstruction of typed (non-opaque) pointers in AIR.
++//
++// The fork's LLVM is opaque-pointer only (its `PointerType` stores just an
++// address space), so IRGen can only emit `ptr addrspace(N)`. But the Metal
++// driver's back-end compiler expects real MSL-shaped AIR: typed pointers
++// (`float addrspace(1)*`) whose pointee matches the access type, and clean
++// element types (Swift's single-field wrapper structs flattened — `%TSf` →
++// `float`, the SIMD storage struct → `<4 x float>`, `InlineArray` → `[N x T]`).
++// Opaque pointers happen to work for plain device-buffer kernels, but typed
++// pointers are required for e.g. simdgroup-matrix intrinsics. This pass runs on
++// the printed textual AIR (the only place typed pointers can exist).
++namespace {
++
++static std::string airTrim(std::string s) {
++  size_t b = s.find_first_not_of(" \t");
++  size_t e = s.find_last_not_of(" \t");
++  return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
++}
++
++// Split on top-level commas (ignoring nesting inside <> [] {} ()).
++static std::vector<std::string> airSplitTop(const std::string &s) {
++  std::vector<std::string> out;
++  int depth = 0;
++  std::string cur;
++  for (char c : s) {
++    if (c == '<' || c == '[' || c == '{' || c == '(')
++      ++depth;
++    else if (c == '>' || c == ']' || c == '}' || c == ')')
++      --depth;
++    if (c == ',' && depth == 0) {
++      out.push_back(airTrim(cur));
++      cur.clear();
++    } else {
++      cur += c;
++    }
++  }
++  if (!airTrim(cur).empty())
++    out.push_back(airTrim(cur));
++  return out;
++}
++
++// Flatten a Swift wrapper type to its MSL-shaped leaf: resolve named types,
++// collapse single-field packed/plain structs, recurse into arrays.
++static std::string airFlattenType(const std::string &t0,
++                                  const std::map<std::string, std::string> &tds,
++                                  int depth = 0) {
++  std::string t = airTrim(t0);
++  if (depth > 32)
++    return t;
++  auto it = tds.find(t);
++  if (it != tds.end())
++    return airFlattenType(it->second, tds, depth + 1);
++  std::smatch m;
++  if (std::regex_match(t, m, std::regex(R"(<\{\s*(.*)\s*\}>)")) ||
++      std::regex_match(t, m, std::regex(R"(\{\s*(.*)\s*\})"))) {
++    std::string inner = airTrim(m[1].str());
++    if (airSplitTop(inner).size() == 1)
++      return airFlattenType(inner, tds, depth + 1);
++    return t;
++  }
++  if (std::regex_match(t, m, std::regex(R"(\[(\d+) x (.*)\])")))
++    return "[" + m[1].str() + " x " + airFlattenType(m[2].str(), tds, depth + 1) +
++           "]";
++  return t;
++}
++
++// Flatten a constant initializer (`%TSf <{ float 1.0 }>` → `float 1.0`,
++// `[8 x %TSf] [...]` → `[8 x float] [...]`).
++static std::string airFlattenConst(const std::string &s0,
++                                   const std::map<std::string, std::string> &tds,
++                                   int depth = 0) {
++  std::string s = airTrim(s0);
++  if (depth > 64)
++    return s;
++  std::smatch m;
++  // TYPE <{ inner }>
++  if (std::regex_match(
++          s, m,
++          std::regex(R"((?:%[\w".$]+|\[[^\]]+\]|<[^>]+>)\s*<\{\s*(.*)\s*\}>)")))
++    return airFlattenConst(m[1].str(), tds, depth + 1);
++  // [N x ETY] [ body ]
++  if (std::regex_match(s, m,
++                       std::regex(R"(\[(\d+) x ([^\]]+)\]\s*\[(.*)\])"))) {
++    std::string n = m[1].str();
++    std::string ety = airFlattenType(m[2].str(), tds);
++    std::vector<std::string> elems = airSplitTop(m[3].str());
++    std::string body;
++    for (size_t i = 0; i < elems.size(); ++i) {
++      if (i)
++        body += ", ";
++      body += airFlattenConst(elems[i], tds, depth + 1);
++    }
++    return "[" + n + " x " + ety + "] [" + body + "]";
++  }
++  return s; // leaf, e.g. "float 1.000000e+00"
++}
++
++static std::string rewriteAIRToTypedPointers(StringRef textRef) {
++  std::string text = textRef.str();
++
++  // Only reconstruct typed pointers when the module has a constant-address-space
++  // global (`addrspace(2) constant`). Opaque pointers work for device-buffer and
++  // texture kernels, but a program-scope constant global forces the driver's
++  // back-end down a path that needs the whole module typed (see docs/emit-air.md
++  // + docs/textures.md). Typing must be all-or-nothing — a half-typed module
++  // (e.g. typed loads + opaque `air.*` intrinsic operands) is rejected by
++  // metal-as — so leave modules without a constant global fully opaque.
++  if (text.find("addrspace(2) constant") == std::string::npos)
++    return text;
++
++  std::vector<std::string> lines;
++  {
++    std::string cur;
++    for (char c : text) {
++      if (c == '\n') { lines.push_back(cur); cur.clear(); }
++      else cur += c;
++    }
++    lines.push_back(cur);
++  }
++
++  // Type definitions.
++  std::map<std::string, std::string> tds;
++  std::regex reType(R"(^(%[\w".$]+) = type (.+)$)");
++  for (auto &l : lines) {
++    std::smatch m;
++    if (std::regex_match(l, m, reType))
++      tds[m[1].str()] = airTrim(m[2].str());
++  }
++
++  // Global constant types (flattened) — for array-global GEP rewriting.
++  std::map<std::string, std::string> gtype;
++  std::regex reGlobalTy(
++      R"(^(@[\w".$]+) = .*?addrspace\((\d+)\) constant (%[\w".$]+|\[[^\]]+\]|<[^>]+>) )");
++  for (auto &l : lines) {
++    std::smatch m;
++    if (std::regex_search(l, m, reGlobalTy))
++      gtype[m[1].str()] = airFlattenType(m[3].str(), tds);
++  }
++
++  // Pointee inference: load/store give the exact access type of their operand;
++  // a GEP's base points at its (flattened) stride type.
++  std::map<std::string, std::string> pointee;
++  std::string TY = R"((<\d+ x [^>]+>|\[\d+ x [^\]]+\]|[%\w."$]+))";
++  std::regex reLoadP(R"(load )" + TY +
++                     R"(, ptr(?: addrspace\(\d+\))? (%[\w.]+))");
++  std::regex reStoreP(R"(store )" + TY +
++                      R"( \S+, ptr(?: addrspace\(\d+\))? (%[\w.]+))");
++  std::regex reGepP(
++      R"(getelementptr(?: inbounds)? (%[\w".$]+|\[[^\]]+\]|<[^>]+>|\w+), ptr(?: addrspace\(\d+\))? (%[\w.]+|@[\w".$]+))");
++  for (auto &l : lines) {
++    std::smatch m;
++    if (std::regex_search(l, m, reLoadP))
++      pointee[m[2].str()] = m[1].str();
++    if (std::regex_search(l, m, reStoreP))
++      pointee[m[2].str()] = m[1].str();
++    if (std::regex_search(l, m, reGepP))
++      if (!pointee.count(m[2].str()))
++        pointee[m[2].str()] = airFlattenType(m[1].str(), tds);
++  }
++
++  // kernel name -> typed signature "void (p1, p2, ...)".
++  std::map<std::string, std::string> ksig;
++
++  std::regex reDef(R"(^(define \S+ @([\w".$]+)\()(.*)(\) #\d+.*)$)");
++  std::regex reParam(R"(ptr( addrspace\(\d+\))?(.*) (%[\w.]+)$)");
++  std::regex reGlobalDecl(
++      R"(^((@[\w".$]+) = .*?addrspace\((\d+)\) constant )(%[\w".$]+|\[[^\]]+\]|<[^>]+>) (.+?)(, align \d+)$)");
++  std::regex reGep(
++      R"(^(\s*)(%[\w.]+) = getelementptr(?: inbounds)? (%[\w".$]+|\[[^\]]+\]|<[^>]+>|\w+), ptr( addrspace\(\d+\))? (%[\w.]+|@[\w".$]+)(, .*)$)");
++  std::regex reLoad(R"(^(\s*)(%[\w.]+) = load )" + TY +
++                    R"(, ptr( addrspace\(\d+\))? (%[\w.]+|@[\w".$]+)(, .*)$)");
++  std::regex reStore(R"(^(\s*)store )" + TY +
++                     R"( (\S+), ptr( addrspace\(\d+\))? (%[\w.]+|@[\w".$]+)(, .*)$)");
++  std::regex reKernelMD(R"(^(!\d+ = !\{)ptr (@([\w".$]+))(,.*)$)");
++
++  std::string out;
++  for (auto &line : lines) {
++    std::smatch m;
++
++    // Function signature.
++    if (std::regex_match(line, m, reDef)) {
++      std::string kname = m[2].str();
++      std::vector<std::string> params = airSplitTop(m[3].str());
++      std::string newParams, sig;
++      for (size_t i = 0; i < params.size(); ++i) {
++        std::smatch pm;
++        std::string np, st;
++        if (std::regex_match(params[i], pm, reParam)) {
++          std::string aspace = pm[1].str();
++          std::string attrs = pm[2].str();
++          std::string nm = pm[3].str();
++          std::string pt = pointee.count(nm) ? pointee[nm] : std::string("i8");
++          np = pt + aspace + "*" + attrs + " " + nm;
++          st = pt + aspace + "*";
++        } else {
++          np = params[i];
++          // Extract the leading LLVM type for the signature — it may contain
++          // spaces (`<2 x i32>`, `[4 x float]`), so don't split on the first space.
++          std::smatch tm;
++          if (std::regex_search(
++                  params[i], tm,
++                  std::regex(R"(^(<\d+ x [^>]+>|\[\d+ x [^\]]+\]|[%\w."$]+))")))
++            st = tm[1].str();
++          else
++            st = params[i];
++        }
++        if (i) { newParams += ", "; sig += ", "; }
++        newParams += np;
++        sig += st;
++      }
++      ksig[kname] = "void (" + sig + ")";
++      out += m[1].str() + newParams + m[4].str() + "\n";
++      continue;
++    }
++
++    // Global constant declaration: flatten type + initializer.
++    if (std::regex_match(line, m, reGlobalDecl)) {
++      std::string ft = airFlattenType(m[4].str(), tds);
++      std::string fv = airFlattenConst(m[4].str() + " " + m[5].str(), tds);
++      out += m[1].str() + fv + m[6].str() + "\n";
++      continue;
++    }
++
++    // getelementptr.
++    if (std::regex_match(line, m, reGep)) {
++      std::string indent = m[1].str(), res = m[2].str(), stride = m[3].str();
++      std::string aspace = m[4].str(), base = m[5].str(), idxs = m[6].str();
++      auto git = gtype.find(base);
++      if (git != gtype.end() && !git->second.empty() && git->second[0] == '[') {
++        // Array-global access: rewrite to the 2-index array form.
++        std::string at = git->second;
++        out += indent + res + " = getelementptr inbounds " + at + ", " + at +
++               aspace + "* " + base + ", i64 0" + idxs + "\n";
++      } else {
++        std::string fstride = airFlattenType(stride, tds);
++        out += indent + res + " = getelementptr inbounds " + fstride + ", " +
++               fstride + aspace + "* " + base + idxs + "\n";
++      }
++      continue;
++    }
++
++    // load.
++    if (std::regex_match(line, m, reLoad)) {
++      out += m[1].str() + m[2].str() + " = load " + m[3].str() + ", " +
++             m[3].str() + m[4].str() + "* " + m[5].str() + m[6].str() + "\n";
++      continue;
++    }
++
++    // store.
++    if (std::regex_match(line, m, reStore)) {
++      out += m[1].str() + "store " + m[2].str() + " " + m[3].str() + ", " +
++             m[2].str() + m[4].str() + "* " + m[5].str() + m[6].str() + "\n";
++      continue;
++    }
++
++    // air.kernel metadata: type the function pointer.
++    if (std::regex_match(line, m, reKernelMD) && ksig.count(m[3].str())) {
++      out += m[1].str() + ksig[m[3].str()] + "* " + m[2].str() + m[4].str() +
++             "\n";
++      continue;
++    }
++
++    out += line + "\n";
++  }
++
++  if (!out.empty() && out.back() == '\n')
++    out.pop_back(); // don't add a trailing newline beyond the original
++  return out;
++}
++
++} // end anonymous namespace
++
++// swift-metal: rewrite the printed AIR file in place to use typed pointers.
++static bool rewriteAIRFileToTypedPointers(StringRef airPath,
++                                          DiagnosticEngine &Diags) {
++  auto buf = llvm::MemoryBuffer::getFile(airPath);
++  if (!buf) {
++    Diags.diagnose(SourceLoc(), diag::error_gpu_metallib_tool_failed,
++                   "typed-pointers");
++    return true;
++  }
++  std::string rewritten = rewriteAIRToTypedPointers((*buf)->getBuffer());
++  std::error_code ec;
++  llvm::raw_fd_ostream os(airPath, ec);
++  if (ec) {
++    Diags.diagnose(SourceLoc(), diag::error_gpu_metallib_tool_failed,
++                   "typed-pointers");
++    return true;
++  }
++  os << rewritten;
++  return false;
++}
++
++static bool packageMetallib(StringRef airPath, DiagnosticEngine &Diags) {
++  auto xcrun = llvm::sys::findProgramByName("xcrun");
++  if (!xcrun) {
++    Diags.diagnose(SourceLoc(), diag::error_gpu_metallib_tool_failed, "xcrun");
++    return true;
++  }
++  auto run = [&](llvm::ArrayRef<llvm::StringRef> args) -> bool {
++    if (llvm::sys::ExecuteAndWait(*xcrun, args) != 0) {
++      Diags.diagnose(SourceLoc(), diag::error_gpu_metallib_tool_failed, args[1]);
++      return true;
++    }
++    return false;
++  };
++
++  llvm::SmallString<128> airBC;
++  if (llvm::sys::fs::createTemporaryFile("swiftgpu", "air", airBC)) {
++    Diags.diagnose(SourceLoc(), diag::error_gpu_metallib_tool_failed, "metal-as");
++    return true;
++  }
++
++  // metal-as: textual AIR -> AIR bitcode; metallib: bitcode -> loadable library
++  // (overwriting the textual output at airPath).
++  bool failed = run({"xcrun", "metal-as", airPath, "-o", airBC}) ||
++                run({"xcrun", "metallib", airBC, "-o", airPath});
++  llvm::sys::fs::remove(airBC);
++  return failed;
++}
++
+ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
+                          llvm::Module *IRModule,
+                          llvm::GlobalVariable *HashGlobal) {
+@@ -2174,10 +2501,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
+     return true;
+ 
+   // Now that we have a single IR Module, hand it over to performLLVM.
+-  return performLLVM(opts, Instance.getDiags(), nullptr, HashGlobal, IRModule,
+-                     TargetMachine.get(),
+-                     Instance.getSourceMgr().getFileSystem(), OutputFilename,
+-                     Instance.getOutputBackend(), Instance.getStatsReporter());
++  if (performLLVM(opts, Instance.getDiags(), nullptr, HashGlobal, IRModule,
++                  TargetMachine.get(),
++                  Instance.getSourceMgr().getFileSystem(), OutputFilename,
++                  Instance.getOutputBackend(), Instance.getStatsReporter()))
++    return true;
++
++  // swift-metal: the GPU path prints opaque-pointer AIR; rewrite it in place to
++  // typed (non-opaque) pointers, which the driver's back-end compiler expects
++  // (and simdgroup intrinsics require). Covers both -emit-air (final file) and
++  // -emit-metallib (packaged just below from the same file).
++  if (opts.EmitGPUDeviceIR && !OutputFilename.empty() && OutputFilename != "-")
++    if (rewriteAIRFileToTypedPointers(OutputFilename, Instance.getDiags()))
++      return true;
++
++  // swift-metal: -emit-metallib writes textual AIR, then packages it in place.
++  if (opts.EmitGPUMetallib && !OutputFilename.empty() && OutputFilename != "-")
++    return packageMetallib(OutputFilename, Instance.getDiags());
++
++  return false;
+ }
+ 
+ static bool performCompileStepsPostSILGen(
+diff --git a/lib/IRGen/Fulfillment.cpp b/lib/IRGen/Fulfillment.cpp
+index 5d8f133f972..e12952750d2 100644
+--- a/lib/IRGen/Fulfillment.cpp
++++ b/lib/IRGen/Fulfillment.cpp
+@@ -53,6 +53,7 @@ static bool isLeafTypeMetadata(CanType type) {
+ #include "swift/AST/TypeNodes.def"
+   case TypeKind::LValue:
+   case TypeKind::InOut:
++  case TypeKind::AddressSpace:
+   case TypeKind::DynamicSelf:
+   case TypeKind::PackExpansion:
+   case TypeKind::PackElement:
+diff --git a/lib/IRGen/GenDecl.cpp b/lib/IRGen/GenDecl.cpp
+index 44cca5b9e19..3446ec8d212 100644
+--- a/lib/IRGen/GenDecl.cpp
++++ b/lib/IRGen/GenDecl.cpp
+@@ -2555,7 +2555,8 @@ llvm::Function *irgen::createFunction(IRGenModule &IGM, LinkInfo &linkInfo,
+ llvm::GlobalVariable *swift::irgen::createVariable(
+     IRGenModule &IGM, LinkInfo &linkInfo, llvm::Type *storageType,
+     Alignment alignment, DebugTypeInfo DbgTy,
+-    std::optional<SILLocation> DebugLoc, StringRef DebugName) {
++    std::optional<SILLocation> DebugLoc, StringRef DebugName,
++    unsigned addressSpace) {
+   auto name = linkInfo.getName();
+   llvm::GlobalValue *existingValue = IGM.Module.getNamedGlobal(name);
+   if (existingValue) {
+@@ -2571,9 +2572,11 @@ llvm::GlobalVariable *swift::irgen::createVariable(
+     existingValue->setName(name + ".unique");
+   }
+ 
+-  auto var = new llvm::GlobalVariable(IGM.Module, storageType,
+-                                      /*constant*/ false, linkInfo.getLinkage(),
+-                                      /*initializer*/ nullptr, name);
++  auto var = new llvm::GlobalVariable(
++      IGM.Module, storageType,
++      /*constant*/ false, linkInfo.getLinkage(),
++      /*initializer*/ nullptr, name, /*insertBefore*/ nullptr,
++      llvm::GlobalValue::NotThreadLocal, addressSpace);
+   ApplyIRLinkage({linkInfo.getLinkage(),
+                   linkInfo.getVisibility(),
+                   linkInfo.getDLLStorage()})
+@@ -2839,6 +2842,17 @@ Address IRGenModule::getAddrOfSILGlobalVariable(SILGlobalVariable *var,
+     initVal = getGlobalInitValue(var, storageType, fixedAlignment);
+     llvm::Type *globalTy = initVal ? initVal->getType() : storageType;
+ 
++    // swift-metal: place a program-scope constant (a global with static
++    // initializer data — e.g. `let table: InlineArray<N,Float> = [...]`) in the
++    // GPU constant address space (AIR addrspace 2). This is the only legal
++    // address space for program-scope read-only data in MSL, and the driver
++    // only bakes the data into the metallib when it lives there. GEPs/loads
++    // rooted at the global inherit the address space, so no reference rewrite
++    // is needed.
++    unsigned gpuAddressSpace = 0;
++    if (IRGen.Opts.EmitGPUDeviceIR && var->getStaticInitializerValue())
++      gpuAddressSpace = /*AIR constant*/ 2;
++
+     if (var->isInitializedObject()) {
+       // An initialized object is always a compiler-generated "outlined"
+       // variable. Therefore we don't generate debug info for it.
+@@ -2862,7 +2876,8 @@ Address IRGenModule::getAddrOfSILGlobalVariable(SILGlobalVariable *var,
+               ? DebugTypeInfo::getGlobalFixedBuffer(var, fixedAlignment, *this)
+               : DebugTypeInfo::getGlobal(var, *this);
+ 
+-      gvar = createVariable(*this, link, globalTy, fixedAlignment, DbgTy, loc, name);
++      gvar = createVariable(*this, link, globalTy, fixedAlignment, DbgTy, loc,
++                            name, gpuAddressSpace);
+     }
+     if (!forDefinition)
+       gvar->setComdat(nullptr);
+@@ -2904,8 +2919,17 @@ Address IRGenModule::getAddrOfSILGlobalVariable(SILGlobalVariable *var,
+       gvar->getValueType(), gvar, Indices);
+   }
+ 
+-  addr = llvm::ConstantExpr::getBitCast(
+-      addr, castStorageToType ? castStorageToType : PtrTy);
++  // swift-metal: a GPU constant global lives in a non-default address space
++  // (AIR addrspace 2); keep the pointer in that space (a bitcast to the
++  // default `PtrTy` in addrspace 0 would be an invalid cross-space bitcast).
++  llvm::Type *destPtrTy = castStorageToType;
++  if (!destPtrTy) {
++    unsigned as = gvar->getAddressSpace();
++    destPtrTy = as == PtrTy->getPointerAddressSpace()
++                    ? PtrTy
++                    : llvm::PointerType::get(getLLVMContext(), as);
++  }
++  addr = llvm::ConstantExpr::getBitCast(addr, destPtrTy);
+   if (castStorageToType)
+     storageType = cast<ClassTypeInfo>(ti).getClassLayoutType();
+ 
+diff --git a/lib/IRGen/GenDecl.h b/lib/IRGen/GenDecl.h
+index f5463be7146..1f431db2f71 100644
+--- a/lib/IRGen/GenDecl.h
++++ b/lib/IRGen/GenDecl.h
+@@ -52,7 +52,8 @@ namespace irgen {
+   createVariable(IRGenModule &IGM, LinkInfo &linkInfo, llvm::Type *objectType,
+                  Alignment alignment, DebugTypeInfo DebugType = DebugTypeInfo(),
+                  std::optional<SILLocation> DebugLoc = std::nullopt,
+-                 StringRef DebugName = StringRef());
++                 StringRef DebugName = StringRef(),
++                 unsigned addressSpace = 0);
+ 
+   llvm::GlobalVariable *
+   createLinkerDirectiveVariable(IRGenModule &IGM, StringRef Name);
+diff --git a/lib/IRGen/GenStruct.cpp b/lib/IRGen/GenStruct.cpp
+index 8bf3fe5e05f..96430e15768 100644
+--- a/lib/IRGen/GenStruct.cpp
++++ b/lib/IRGen/GenStruct.cpp
+@@ -1373,9 +1373,24 @@ namespace {
+     SILType getType(VarDecl *field) {
+       assert(field->getDeclContext() == TheStruct->getAnyNominal());
+       auto silType = SILType::getPrimitiveAddressType(TheStruct);
+-      return silType.getFieldType(
++      auto fieldType = silType.getFieldType(
+           field, IGM.getSILModule(),
+           IGM.getMaximalTypeExpansionContext());
++      // swift-metal: UnsafePointer<device T>'s raw-pointer storage field lives
++      // in the pointee's address space, so lower it to `ptr addrspace(N)`.
++      if (auto bgt = dyn_cast<BoundGenericStructType>(TheStruct)) {
++        StringRef n = bgt->getDecl()->getName().str();
++        if ((n == "UnsafePointer" || n == "UnsafeMutablePointer") &&
++            bgt->getGenericArgs().size() == 1) {
++          if (auto *asTy =
++                  bgt.getGenericArgs()[0]->getAs<AddressSpaceType>()) {
++            auto wrapped = AddressSpaceType::get(fieldType.getASTType(),
++                                                 asTy->getAddressSpace());
++            return SILType::getPrimitiveObjectType(wrapped->getCanonicalType());
++          }
++        }
++      }
++      return fieldType;
+     }
+ 
+     StructLayout performLayout(ArrayRef<const TypeInfo *> fieldTypes) {
+diff --git a/lib/IRGen/GenType.cpp b/lib/IRGen/GenType.cpp
+index aea347284a3..fc8125b7c05 100644
+--- a/lib/IRGen/GenType.cpp
++++ b/lib/IRGen/GenType.cpp
+@@ -2405,14 +2405,50 @@ const TypeInfo *TypeConverter::convertType(CanType ty) {
+   case TypeKind::Enum:
+   case TypeKind::Struct:
+     return convertAnyNominalType(ty, cast<NominalType>(ty)->getDecl());
++  case TypeKind::BoundGenericStruct: {
++    // swift-metal: UnsafePointer<device T> must lower to `ptr addrspace(N)`. All
++    // UnsafePointer<T> normally share one addrspace(0) TypeInfo (their layout is
++    // T-independent in Swift's model), so give an address-space-qualified pointer
++    // a DISTINCT concrete TypeInfo by lowering it directly — which reaches the
++    // getType() field intercept in convertStructType.
++    auto bgt = cast<BoundGenericStructType>(ty);
++    StringRef sn = bgt->getDecl()->getName().str();
++    if ((sn == "UnsafePointer" || sn == "UnsafeMutablePointer") &&
++        bgt->getGenericArgs().size() == 1 &&
++        bgt.getGenericArgs()[0]->is<AddressSpaceType>()) {
++      return convertStructType(ty.getPointer(), ty, bgt->getDecl());
++    }
++    return convertAnyNominalType(ty, bgt->getDecl());
++  }
+   case TypeKind::BoundGenericClass:
+   case TypeKind::BoundGenericEnum:
+-  case TypeKind::BoundGenericStruct:
+     return convertAnyNominalType(ty, cast<BoundGenericType>(ty)->getDecl());
+   case TypeKind::SILMoveOnlyWrapped:
+     llvm_unreachable("implement this");
+   case TypeKind::InOut:
+     return convertInOutType(cast<InOutType>(ty));
++  case TypeKind::AddressSpace: {
++    auto asTy = cast<AddressSpaceType>(ty);
++    const TypeInfo &objTI =
++        getCompleteTypeInfo(asTy->getObjectType()->getCanonicalType());
++    // If the underlying type is pointer-represented (e.g. Builtin.RawPointer —
++    // the storage field of UnsafePointer<device T>), the qualifier applies to
++    // that pointer: it becomes `ptr addrspace(N)`. Otherwise (an ordinary value
++    // like Float) the address space does not affect the register representation.
++    if (auto *fixed = dyn_cast<FixedTypeInfo>(&objTI)) {
++      auto *storage = fixed->getStorageType();
++      if (storage->isPointerTy() && storage->getPointerAddressSpace() == 0) {
++        auto *asStorage = llvm::PointerType::get(IGM.getLLVMContext(),
++                                                 asTy->getAddressSpace());
++        auto *ti = new RawPointerTypeInfo(asStorage, IGM.getPointerSize(),
++                                          IGM.getPointerAlignment());
++        ti->NextConverted = FirstType;
++        FirstType = ti;
++        return ti;
++      }
++    }
++    return &objTI;
++  }
+   case TypeKind::Tuple:
+     return convertTupleType(cast<TupleType>(ty));
+   case TypeKind::Function:
+diff --git a/lib/IRGen/IRGen.cpp b/lib/IRGen/IRGen.cpp
+index 5dd214df8f0..dc6d6cfe412 100644
+--- a/lib/IRGen/IRGen.cpp
++++ b/lib/IRGen/IRGen.cpp
+@@ -60,6 +60,7 @@
+ #include "llvm/CodeGen/TargetSubtargetInfo.h"
+ #include "llvm/IR/Constants.h"
+ #include "llvm/IR/DataLayout.h"
++#include "llvm/IR/NoFolder.h"
+ #include "llvm/IR/LLVMContext.h"
+ #include "llvm/IR/LegacyPassManager.h"
+ #include "llvm/IR/Module.h"
+@@ -362,6 +363,427 @@ void diagnoseSync(
+   Diags.diagnose(Loc, ID, std::move(Args)...);
+ }
+ 
++// swift-metal: normalize an optimized module into loadable Apple AIR.
++// Address spaces are already native (IRGen emits ptr addrspace(N)); this handles
++// the remaining gaps to metal-as (an ~LLVM 17 assembler) and the ABI metadata.
++namespace {
++
++static const char *kAIRTriple = "air64_v28-apple-macosx26.0.0";
++static const char *kAIRDataLayout =
++    "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-"
++    "f64:64:64-v16:16:16-v24:32:32-v32:32:32-v48:64:64-v64:64:64-v96:128:128-"
++    "v128:128:128-v192:256:256-v256:256:256-v512:512:512-v1024:1024:1024-n8:16:32";
++
++/// Map a Swift pointee spelling to its AIR type name + size/align.
++static std::tuple<std::string, unsigned, unsigned>
++airTypeForPointee(llvm::StringRef p) {
++  p = p.trim();
++  if (p == "Float" || p == "Float32") return {"float", 4, 4};
++  if (p == "SIMD2<Float>") return {"float2", 8, 8};
++  if (p == "SIMD3<Float>") return {"float3", 16, 16};
++  if (p == "SIMD4<Float>") return {"float4", 16, 16};
++  if (p == "UInt32") return {"uint", 4, 4};
++  if (p == "Int32") return {"int", 4, 4};
++  if (p == "Float16") return {"half", 2, 2};
++  return {"float", 4, 4};
++}
++
++/// Parse a pointer type string: mutability, address space, pointee spelling.
++static bool parsePointerType(llvm::StringRef t, bool &isMutable,
++                             unsigned &addressSpace, std::string &pointee) {
++  t = t.trim();
++  if (t.consume_front("UnsafeMutablePointer<")) isMutable = true;
++  else if (t.consume_front("UnsafePointer<")) isMutable = false;
++  else return false;
++  if (!t.consume_back(">")) return false;
++  t = t.trim();
++  addressSpace = 0;
++  if (t.consume_front("device ")) addressSpace = 1;
++  else if (t.consume_front("constant ")) addressSpace = 2;
++  else if (t.consume_front("threadgroup ")) addressSpace = 3;
++  else if (t.consume_front("thread ")) addressSpace = 0;
++  pointee = t.trim().str();
++  return true;
++}
++
++/// AIR scalar/vector type name for a thread/grid builtin whose Swift type is
++/// `swiftType` (e.g. `UInt32` -> "uint", `SIMD2<UInt32>` -> "uint2" for 2D
++/// dispatch). Positions are unsigned; the SIMD2 case is ABI-clean (`<2 x i32>`
++/// matches MSL `uint2`).
++static llvm::StringRef airBuiltinTypeName(llvm::StringRef swiftType) {
++  swiftType = swiftType.trim();
++  if (swiftType == "SIMD2<UInt32>") return "uint2";
++  if (swiftType == "SIMD3<UInt32>") return "uint3";
++  if (swiftType == "SIMD4<UInt32>") return "uint4";
++  if (swiftType == "SIMD2<Int32>") return "int2";
++  if (swiftType == "SIMD3<Int32>") return "int3";
++  if (swiftType == "SIMD4<Int32>") return "int4";
++  if (swiftType == "Int32") return "int";
++  return "uint"; // UInt32 and default
++}
++
++/// snake_case AIR name for a thread/grid builtin marker (threadPositionInGrid ->
++/// air.thread_position_in_grid).
++static std::string builtinAirName(llvm::StringRef marker) {
++  std::string out = "air.";
++  for (char c : marker) {
++    if (isupper(c)) { out += '_'; out += tolower(c); }
++    else out += c;
++  }
++  return out;
++}
++
++static llvm::MDString *mds(llvm::LLVMContext &c, llvm::StringRef s) {
++  return llvm::MDString::get(c, s);
++}
++static llvm::Metadata *mdi(llvm::LLVMContext &c, int v) {
++  return llvm::ConstantAsMetadata::get(
++      llvm::ConstantInt::getSigned(llvm::Type::getInt32Ty(c), v));
++}
++static llvm::StringRef mdStr(const llvm::MDOperand &op) {
++  if (auto *s = llvm::dyn_cast<llvm::MDString>(op.get())) return s->getString();
++  return {};
++}
++static int mdInt(const llvm::MDOperand &op) {
++  if (auto *c = llvm::dyn_cast<llvm::ConstantAsMetadata>(op.get()))
++    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(c->getValue()))
++      return (int)ci->getSExtValue();
++  return -1;
++}
++
++static void normalizeModuleToAIR(llvm::Module &M) {
++  auto &Ctx = M.getContext();
++
++  // (1) Target facts.
++  M.setTargetTriple(llvm::Triple(kAIRTriple));
++  M.setDataLayout(kAIRDataLayout);
++
++  // (2) Per-function/instruction cleanups for metal-as (LLVM ~17).
++  for (auto &F : M) {
++    if (F.getCallingConv() == llvm::CallingConv::Swift)
++      F.setCallingConv(llvm::CallingConv::C);
++    // AIR intrinsics (declared via @_silgen_name, e.g. air.wg.barrier) must be
++    // `convergent` — the driver requires it and the optimizer must not move a
++    // barrier across divergent control flow. Give the declaration clean
++    // intrinsic attributes instead of the host attributes it inherited.
++    if (F.isDeclaration() && F.getName().starts_with("air.")) {
++      F.setAttributes(llvm::AttributeList());
++      F.addFnAttr(llvm::Attribute::Convergent);
++      F.addFnAttr(llvm::Attribute::NoUnwind);
++      F.addFnAttr(llvm::Attribute::WillReturn);
++    }
++    // Strip parameter attributes metal-as's LLVM (~17) can't parse: the new
++    // `captures(none)` spelling of nocapture.
++    for (unsigned i = 0, e = F.arg_size(); i != e; ++i)
++      F.removeParamAttr(i, llvm::Attribute::Captures);
++    // Strip function attributes metal-as can't parse (the `memory(...)` effect
++    // spelling) or that are host-specific (target-cpu/features don't belong in
++    // AIR).
++    F.removeFnAttr(llvm::Attribute::Memory);
++    for (llvm::StringRef a : {"target-cpu", "target-features",
++                              "stack-protector-buffer-size"})
++      F.removeFnAttr(a);
++    // Stack protection is meaningless on the GPU (no stack canary) and the
++    // driver's back-end crashes on `sspreq`/`ssp`/`sspstrong` — Swift adds it to
++    // any function with an addressable local (e.g. the expected-value slot an
++    // atomic compare-exchange needs).
++    F.removeFnAttr(llvm::Attribute::StackProtect);
++    F.removeFnAttr(llvm::Attribute::StackProtectReq);
++    F.removeFnAttr(llvm::Attribute::StackProtectStrong);
++    for (auto &BB : F) {
++      for (auto &I : llvm::make_early_inc_range(BB)) {
++        // Strip !prof (branch_weights) metadata: metal-as's LLVM (~17) rejects
++        // the newer `!{!"branch_weights", !"expected", ...}` form ("Wrong
++        // number of operands"), and profile weights are meaningless for a
++        // shader. This is what lets integer kernels — whose overflow checks
++        // emit conditional branches — assemble.
++        I.setMetadata(llvm::LLVMContext::MD_prof, nullptr);
++        if (auto *GEP = llvm::dyn_cast<llvm::GetElementPtrInst>(&I))
++          GEP->setNoWrapFlags(llvm::GEPNoWrapFlags::none());
++        if (auto *CB = llvm::dyn_cast<llvm::CallBase>(&I)) {
++          if (CB->getCallingConv() == llvm::CallingConv::Swift)
++            CB->setCallingConv(llvm::CallingConv::C);
++          // Mark calls to AIR intrinsics (e.g. air.wg.barrier) convergent.
++          if (auto *callee = CB->getCalledFunction())
++            if (callee->getName().starts_with("air."))
++              CB->addFnAttr(llvm::Attribute::Convergent);
++        }
++        // Strip newer LLVM flags metal-as (~17) can't parse: `nneg` on zext,
++        // `disjoint` on or (mirrors the `nuw`-off-GEP handling above).
++        if (auto *pnni = llvm::dyn_cast<llvm::PossiblyNonNegInst>(&I))
++          pnni->setNonNeg(false);
++        if (auto *pdi = llvm::dyn_cast<llvm::PossiblyDisjointInst>(&I))
++          pdi->setIsDisjoint(false);
++        // Materialize non-zero splat constants as shufflevector (metal-as's LLVM
++        // has no `splat (T V)` constant syntax).
++        for (unsigned oi = 0, oe = I.getNumOperands(); oi != oe; ++oi) {
++          auto *C = llvm::dyn_cast<llvm::Constant>(I.getOperand(oi));
++          if (!C || llvm::isa<llvm::ConstantAggregateZero>(C)) continue;
++          auto *VT = llvm::dyn_cast<llvm::FixedVectorType>(C->getType());
++          if (!VT) continue;
++          llvm::Constant *splat = C->getSplatValue();
++          if (!splat) continue;
++          // NoFolder: otherwise the builder folds the shuffle straight back into
++          // the splat constant we're trying to eliminate.
++          llvm::IRBuilder<llvm::NoFolder> B(&I);
++          llvm::Value *ins = B.CreateInsertElement(llvm::PoisonValue::get(VT),
++                                                   splat, B.getInt64(0));
++          auto *maskTy = llvm::FixedVectorType::get(B.getInt32Ty(),
++                                                    VT->getNumElements());
++          llvm::Value *shuf = B.CreateShuffleVector(
++              ins, llvm::PoisonValue::get(VT),
++              llvm::Constant::getNullValue(maskTy));
++          I.setOperand(oi, shuf);
++        }
++      }
++    }
++  }
++
++  // (2c) Fix uint3 builtins. Swift's SIMD3<UInt32> lowers to `<4 x i32>` (padded),
++  // but the driver's `thread_position_in_grid` (and 3-D texture coords) need
++  // `<3 x i32>`. Rebuild each kernel whose signature has a `<4 x i32>` value param
++  // (only a uint3 builtin can be one — buffers/textures are pointers, positions
++  // are at most 3-D), changing that param to `<3 x i32>` and shuffling it back to
++  // `<4 x i32>` at entry so the body is unchanged.
++  if (auto *swiftgpu = M.getNamedMetadata("swiftgpu.kernels")) {
++    auto *i32Ty = llvm::Type::getInt32Ty(Ctx);
++    auto *v3i32 = llvm::FixedVectorType::get(i32Ty, 3);
++    auto *v4i32 = llvm::FixedVectorType::get(i32Ty, 4);
++    for (auto *kn : swiftgpu->operands()) {
++      if (kn->getNumOperands() < 1) continue;
++      auto *fnMD = llvm::dyn_cast<llvm::ValueAsMetadata>(kn->getOperand(0));
++      if (!fnMD) continue;
++      auto *F = llvm::dyn_cast_or_null<llvm::Function>(fnMD->getValue());
++      if (!F || F->isDeclaration()) continue;
++
++      bool hasUint3 = false;
++      llvm::SmallVector<llvm::Type *, 8> params;
++      for (auto &a : F->args()) {
++        if (a.getType() == v4i32) { hasUint3 = true; params.push_back(v3i32); }
++        else params.push_back(a.getType());
++      }
++      if (!hasUint3) continue;
++
++      auto *newFT = llvm::FunctionType::get(F->getReturnType(), params,
++                                            F->isVarArg());
++      auto *NF = llvm::Function::Create(newFT, F->getLinkage(),
++                                        F->getAddressSpace(), "", &M);
++      NF->copyAttributesFrom(F);
++      NF->setCallingConv(F->getCallingConv());
++      NF->splice(NF->begin(), F);
++      llvm::IRBuilder<> B(&*NF->getEntryBlock().getFirstInsertionPt());
++      for (unsigned i = 0, e = F->arg_size(); i != e; ++i) {
++        llvm::Argument *oldA = F->getArg(i), *newA = NF->getArg(i);
++        newA->takeName(oldA);
++        if (oldA->getType() == v4i32) {
++          llvm::Value *sh = B.CreateShuffleVector(
++              newA, llvm::PoisonValue::get(v3i32),
++              llvm::ArrayRef<int>{0, 1, 2, -1});
++          oldA->replaceAllUsesWith(sh);
++        } else {
++          oldA->replaceAllUsesWith(newA);
++        }
++      }
++      // A function is an opaque `ptr` value, so F and NF have the same value
++      // type — RAUW updates the remaining references (llvm.used, metadata).
++      std::string name = F->getName().str();
++      F->replaceAllUsesWith(NF);
++      F->eraseFromParent();
++      NF->setName(name);
++    }
++  }
++
++  // (3) Convert !swiftgpu.kernels into the AIR entry-point + argument metadata.
++  if (auto *swiftgpu = M.getNamedMetadata("swiftgpu.kernels")) {
++    llvm::SmallVector<llvm::Metadata *, 4> airKernels;
++    for (auto *kn : swiftgpu->operands()) {
++      if (kn->getNumOperands() < 3) continue;
++      auto *fnMD = llvm::dyn_cast<llvm::ValueAsMetadata>(kn->getOperand(0));
++      auto *argsMD = llvm::dyn_cast<llvm::MDNode>(kn->getOperand(2));
++      if (!fnMD || !argsMD) continue;
++
++      llvm::SmallVector<llvm::Metadata *, 8> airArgs;
++      // Threadgroup (addrspace 3) buffers are bound in their own 0-based index
++      // namespace ([[threadgroup(N)]]), separate from device/constant buffers
++      // ([[buffer(N)]]) — matching MSL. The driver rejects a threadgroup arg
++      // whose location index doesn't start there.
++      int threadgroupIndex = 0;
++      int textureIndex = 0;
++      int samplerIndex = 0;
++      for (auto &argOp : argsMD->operands()) {
++        auto *a = llvm::dyn_cast<llvm::MDNode>(argOp.get());
++        if (!a || a->getNumOperands() < 5) continue;
++        int pos = mdInt(a->getOperand(0));
++        llvm::StringRef role = mdStr(a->getOperand(1));
++        int slot = mdInt(a->getOperand(2));
++        llvm::StringRef type = mdStr(a->getOperand(3));
++        llvm::StringRef name = mdStr(a->getOperand(4));
++
++        if (role == "buffer") {
++          bool isMutable = false; unsigned as = 1; std::string pointee;
++          parsePointerType(type, isMutable, as, pointee);
++          auto [airName, size, align] = airTypeForPointee(pointee);
++          int index = as == 3 ? threadgroupIndex++ : (slot >= 0 ? slot : pos);
++          airArgs.push_back(llvm::MDNode::get(Ctx, {
++            mdi(Ctx, pos), mds(Ctx, "air.buffer"),
++            mds(Ctx, "air.location_index"), mdi(Ctx, index), mdi(Ctx, 1),
++            mds(Ctx, isMutable ? "air.read_write" : "air.read"),
++            mds(Ctx, "air.address_space"), mdi(Ctx, (int)as),
++            mds(Ctx, "air.arg_type_size"), mdi(Ctx, (int)size),
++            mds(Ctx, "air.arg_type_align_size"), mdi(Ctx, (int)align),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, airName),
++            mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++        } else if (role == "texture") {
++          // Textures are bound in their own 0-based [[texture(N)]] namespace.
++          // Recover dimension + access + element type from the Swift type name
++          // (`type`), e.g. "WriteTexture3D<Float16>" -> texture3d, write, half.
++          bool is3D = type.contains("3D");
++          llvm::StringRef access = type.starts_with("ReadWrite") ? "air.read_write"
++                                 : type.starts_with("Write")     ? "air.write"
++                                                                 : "air.read";
++          llvm::StringRef accessWord = access == "air.read_write" ? "read_write"
++                                     : access == "air.write"      ? "write"
++                                                                  : "read";
++          // Element type from the generic argument.
++          llvm::StringRef elem = "float";
++          if (type.contains("<Float16>")) elem = "half";
++          else if (type.contains("<UInt32>")) elem = "uint";
++          else if (type.contains("<Int32>")) elem = "int";
++          std::string typeName = (std::string(is3D ? "texture3d" : "texture2d") +
++                                  "<" + elem.str() + ", " + accessWord.str() + ">");
++          // The binding slot within the [[texture(N)]] namespace comes from an
++          // explicit @Binding(to:) if present, else the appearance order. (The
++          // resource *kind* is the type's job — there is no @Texture attribute.)
++          int index = slot >= 0 ? slot : textureIndex;
++          textureIndex = index + 1;
++          airArgs.push_back(llvm::MDNode::get(Ctx, {
++            mdi(Ctx, pos), mds(Ctx, "air.texture"),
++            mds(Ctx, "air.location_index"), mdi(Ctx, index), mdi(Ctx, 1),
++            mds(Ctx, access),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, typeName),
++            mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++        } else if (role == "sampler") {
++          // Samplers have their own 0-based [[sampler(N)]] namespace; @Binding(to:)
++          // sets the slot explicitly, else appearance order.
++          int index = slot >= 0 ? slot : samplerIndex;
++          samplerIndex = index + 1;
++          airArgs.push_back(llvm::MDNode::get(Ctx, {
++            mdi(Ctx, pos), mds(Ctx, "air.sampler"),
++            mds(Ctx, "air.location_index"), mdi(Ctx, index), mdi(Ctx, 1),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, "sampler"),
++            mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++        } else {
++          airArgs.push_back(llvm::MDNode::get(Ctx, {
++            mdi(Ctx, pos), mds(Ctx, builtinAirName(role)),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, airBuiltinTypeName(type)),
++            mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++        }
++      }
++
++      airKernels.push_back(llvm::MDNode::get(Ctx, {
++        fnMD, llvm::MDNode::get(Ctx, {}), llvm::MDNode::get(Ctx, airArgs)}));
++    }
++    swiftgpu->eraseFromParent();
++    if (!airKernels.empty()) {
++      auto *airKernel = M.getOrInsertNamedMetadata("air.kernel");
++      for (auto *k : airKernels)
++        airKernel->addOperand(llvm::cast<llvm::MDNode>(k));
++    }
++  }
++
++  // (3b) Strip the "PIC Level" module flag. Position-independent code is
++  // meaningless for a GPU shader (a metallib is not relocated like a host
++  // dylib), and — critically — it makes the driver's back-end compiler crash on
++  // a program-scope constant global in the constant address space (addrspace 2,
++  // e.g. `let table: InlineArray<N,Float> = [...]`). Device-only kernels
++  // tolerate it because they have no global data to relocate.
++  if (auto *ModFlags = M.getNamedMetadata("llvm.module.flags")) {
++    llvm::SmallVector<llvm::MDNode *, 16> keep;
++    for (llvm::MDNode *op : ModFlags->operands()) {
++      if (op->getNumOperands() >= 2)
++        if (auto *key = llvm::dyn_cast<llvm::MDString>(op->getOperand(1)))
++          if (key->getString() == "PIC Level")
++            continue;
++      keep.push_back(op);
++    }
++    ModFlags->clearOperands();
++    for (auto *op : keep)
++      ModFlags->addOperand(op);
++  }
++
++  // (3c) Strip Swift runtime metadata — nominal type descriptors / metadata
++  // records / reflection for user types (e.g. Texture2D) land in `__swift5_*` /
++  // `__constg_swiftt` sections that metal-as can't parse (odd sections,
++  // `no_sanitize_address`). A GPU module has no Swift runtime, so they're dead
++  // weight. They're referenced only by `llvm.used`/`llvm.compiler.used` and each
++  // other; drop those anchors, then erase the records (and their now-unused
++  // metadata-accessor functions).
++  for (const char *n : {"llvm.used", "llvm.compiler.used"})
++    if (auto *gv = M.getNamedGlobal(n))
++      gv->eraseFromParent();
++  {
++    // Swift-mangled symbols ($s…) are type descriptors, metadata records, value
++    // witnesses and accessors for our types — a GPU module needs none of them
++    // (kernels are named via @_silgen_name, intrinsics are `air.*`, so no live
++    // code references them). They form a mutually-referential cluster (witness
++    // functions call each other; descriptors reference accessors), so no member
++    // is ever individually unused — RAUW the whole set to undef first to break
++    // the cycle, then erase.
++    auto isSwiftRuntimeSymbol = [](llvm::StringRef n) {
++      return n.starts_with("$s") || n.starts_with("__swift") ||
++             n.starts_with("swift_") || n.starts_with(".str.");
++    };
++    llvm::SmallVector<llvm::GlobalValue *, 32> dead;
++    for (auto &F : M)
++      if (isSwiftRuntimeSymbol(F.getName()))
++        dead.push_back(&F);
++    for (auto &GV : M.globals())
++      // Metadata globals are in the default address space (addrspace 0); a GPU
++      // *data* global (e.g. a constant `let` table in addrspace 2) also carries a
++      // `$s` mangled name but must be kept.
++      if (isSwiftRuntimeSymbol(GV.getName()) && GV.getAddressSpace() == 0)
++        dead.push_back(&GV);
++    // Aliases too (e.g. a type-metadata alias `$s…VN = alias …`) — otherwise one
++    // is left pointing at `undef` and metal-as rejects the module.
++    for (auto &GA : M.aliases())
++      if (isSwiftRuntimeSymbol(GA.getName()))
++        dead.push_back(&GA);
++    for (auto *gv : dead)
++      gv->replaceAllUsesWith(llvm::UndefValue::get(gv->getType()));
++    for (auto *gv : dead)
++      gv->eraseFromParent();
++  }
++
++  // (4) Module-level AIR facts.
++  auto flag = [&](const char *n, int v) {
++    M.addModuleFlag(llvm::Module::Max, n, (uint32_t)v);
++  };
++  flag("air.max_device_buffers", 31);
++  flag("air.max_constant_buffers", 31);
++  flag("air.max_threadgroup_buffers", 31);
++  flag("air.max_textures", 128);
++  flag("air.max_read_write_textures", 8);
++  flag("air.max_samplers", 16);
++  auto *airVersion = M.getOrInsertNamedMetadata("air.version");
++  if (airVersion->getNumOperands() == 0)
++    airVersion->addOperand(llvm::MDNode::get(
++        Ctx, {mdi(Ctx, 2), mdi(Ctx, 8), mdi(Ctx, 0)}));
++  auto *airLang = M.getOrInsertNamedMetadata("air.language_version");
++  if (airLang->getNumOperands() == 0)
++    airLang->addOperand(llvm::MDNode::get(
++        Ctx, {mds(Ctx, "Metal"), mdi(Ctx, 3), mdi(Ctx, 2), mdi(Ctx, 0)}));
++}
++
++struct SwiftGPUAIRNormalizePass
++    : llvm::PassInfoMixin<SwiftGPUAIRNormalizePass> {
++  llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &) {
++    normalizeModuleToAIR(M);
++    return llvm::PreservedAnalyses::none();
++  }
++};
++
++} // end anonymous namespace
++
+ void swift::performLLVMOptimizations(
+     const IRGenOptions &Opts, DiagnosticEngine &Diags,
+     llvm::sys::Mutex *DiagMutex, llvm::Module *Module,
+@@ -386,6 +808,16 @@ void swift::performLLVMOptimizations(
+     PTO.LoopInterleaving = true;
+     PTO.LoopVectorization = true;
+     PTO.SLPVectorization = true;
++    // swift-metal: the host auto-vectorizer emits ops the AIR back-end can't
++    // lower — `<N x T>` wide loads and `llvm.vector.reduce.*` intrinsics (which
++    // crash the driver). GPU code has its own SIMD model (source-level SIMD
++    // types are unaffected — they come from the type, not the vectorizer), so
++    // disable auto-vectorization for the GPU pipeline.
++    if (Opts.EmitGPUDeviceIR) {
++      PTO.LoopInterleaving = false;
++      PTO.LoopVectorization = false;
++      PTO.SLPVectorization = false;
++    }
+     PTO.MergeFunctions = !Opts.DisableLLVMMergeFunctions;
+     // Splitting trades code size to enhance memory locality, avoid in -Osize.
+     DoHotColdSplit = Opts.EnableHotColdSplit && !Opts.optimizeForSize();
+@@ -575,6 +1007,11 @@ void swift::performLLVMOptimizations(
+   if (Opts.PrintInlineTree)
+     MPM.addPass(InlineTreePrinterPass());
+ 
++  // swift-metal: normalize the optimized module into loadable AIR just before
++  // it's printed (after all -O passes; address spaces are already native).
++  if (Opts.EmitGPUDeviceIR)
++    MPM.addPass(SwiftGPUAIRNormalizePass());
++
+   // Add bitcode/ll output passes to pass manager.
+ 
+   switch (Opts.OutputKind) {
+diff --git a/lib/IRGen/IRGenDebugInfo.cpp b/lib/IRGen/IRGenDebugInfo.cpp
+index 4c53f43f78d..96e2e45f77e 100644
+--- a/lib/IRGen/IRGenDebugInfo.cpp
++++ b/lib/IRGen/IRGenDebugInfo.cpp
+@@ -1973,6 +1973,7 @@ private:
+     // Here goes!
+     switch (BaseTy->getKind()) {
+     case TypeKind::LValue:
++    case TypeKind::AddressSpace:
+     case TypeKind::TypeVariable:
+     case TypeKind::ErrorUnion:
+     case TypeKind::Placeholder:
+diff --git a/lib/IRGen/IRGenModule.cpp b/lib/IRGen/IRGenModule.cpp
+index a9c438fc430..c8448ac3a99 100644
+--- a/lib/IRGen/IRGenModule.cpp
++++ b/lib/IRGen/IRGenModule.cpp
+@@ -23,6 +23,8 @@
+ #include "swift/AST/Module.h"
+ #include "swift/AST/ModuleDependencies.h"
+ #include "swift/AST/ProtocolConformance.h"
++#include "swift/AST/ParameterList.h"
++#include "swift/SIL/SILModule.h"
+ #include "swift/Basic/Assertions.h"
+ #include "swift/Basic/CodeGenerationModel.h"
+ #include "swift/Basic/LLVMExtras.h"
+@@ -2194,6 +2196,7 @@ bool IRGenModule::finalize() {
+   emitSwiftAsyncExtendedFrameInfoWeakRef();
+   emitAutolinkInfo();
+   emitGlobalLists();
++  emitSwiftGPUKernelMetadata();
+   emitUsedConditionals();
+   cleanupClangCodeGenMetadata();
+ 
+@@ -2218,6 +2221,99 @@ bool IRGenModule::finalize() {
+   return true;
+ }
+ 
++/// swift-metal: describe each @Compute kernel's binding contract in a
++/// !swiftgpu.kernels named-metadata node, so an out-of-tree backend can lower
++/// it to AIR without re-parsing the Swift source. One node per kernel:
++///   !{ ptr @sym, !"compute", !args }
++/// with one argument node each: !{ i32 astIdx, !"role", i32 slot, !"type", !"name" }
++/// where role is "buffer" or a thread/grid builtin marker, and slot is the
++/// @Binding index (or -1).
++void IRGenModule::emitSwiftGPUKernelMetadata() {
++  if (this != IRGen.getPrimaryIGM())
++    return;
++
++  auto &ctx = Module.getContext();
++  auto *i32Ty = llvm::Type::getInt32Ty(ctx);
++  auto mdStr = [&](llvm::StringRef s) -> llvm::Metadata * {
++    return llvm::MDString::get(ctx, s);
++  };
++  auto mdInt = [&](int v) -> llvm::Metadata * {
++    return llvm::ConstantAsMetadata::get(llvm::ConstantInt::getSigned(i32Ty, v));
++  };
++
++  llvm::SmallVector<llvm::Metadata *, 4> kernels;
++
++  for (SILFunction &f : getSILModule()) {
++    FuncDecl *fd = nullptr;
++    if (f.hasLocation())
++      fd = dyn_cast_or_null<FuncDecl>(f.getLocation().getAsASTNode<ValueDecl>());
++    if (!fd)
++      if (auto *dc = f.getDeclContext())
++        fd = dyn_cast_or_null<FuncDecl>(dc);
++    if (!fd || !fd->getAttrs().hasAttribute<ComputeAttr>())
++      continue;
++
++    llvm::Function *llvmFn = getAddrOfSILFunction(&f, NotForDefinition);
++    if (!llvmFn)
++      continue;
++
++    llvm::SmallVector<llvm::Metadata *, 8> args;
++    auto *params = fd->getParameters();
++    for (unsigned i = 0, n = params->size(); i != n; ++i) {
++      ParamDecl *p = params->get(i);
++
++      const char *role = "buffer";
++      int slot = -1;
++      if (auto *b = p->getAttrs().getAttribute<BindingAttr>())
++        slot = (int)b->getIndex();
++      if (p->getAttrs().hasAttribute<ThreadPositionInGridAttr>())
++        role = "threadPositionInGrid";
++      else if (p->getAttrs().hasAttribute<ThreadPositionInThreadgroupAttr>())
++        role = "threadPositionInThreadgroup";
++      else if (p->getAttrs().hasAttribute<ThreadgroupPositionInGridAttr>())
++        role = "threadgroupPositionInGrid";
++      else if (p->getAttrs().hasAttribute<ThreadIndexInThreadgroupAttr>())
++        role = "threadIndexInThreadgroup";
++      else if (p->getAttrs().hasAttribute<ThreadsPerThreadgroupAttr>())
++        role = "threadsPerThreadgroup";
++      else if (p->getAttrs().hasAttribute<ThreadgroupsPerGridAttr>())
++        role = "threadgroupsPerGrid";
++
++      // swift-metal: a texture handle (Texture2D/Texture3D/Write*/ReadWrite*
++      // from the textures package) becomes an air.texture argument, not an
++      // air.buffer. The dimension + access are recovered from the type name (the
++      // recorded typeStr) by the normalize pass.
++      if (auto *nom = p->getInterfaceType()->getAnyNominal()) {
++        StringRef tn = nom->getName().str();
++        if (tn == "Texture2D" || tn == "WriteTexture2D" ||
++            tn == "ReadWriteTexture2D" || tn == "Texture3D" ||
++            tn == "WriteTexture3D")
++          role = "texture";
++        else if (tn == "Sampler")
++          role = "sampler";
++      }
++
++      std::string typeStr = p->getInterfaceType().getString();
++      std::string nameStr = p->getName().str().str();
++
++      args.push_back(llvm::MDTuple::get(
++          ctx, {mdInt((int)i), mdStr(role), mdInt(slot), mdStr(typeStr),
++                mdStr(nameStr)}));
++    }
++
++    kernels.push_back(llvm::MDTuple::get(
++        ctx, {llvm::ValueAsMetadata::get(llvmFn), mdStr("compute"),
++              llvm::MDTuple::get(ctx, args)}));
++  }
++
++  if (kernels.empty())
++    return;
++
++  auto *nmd = Module.getOrInsertNamedMetadata("swiftgpu.kernels");
++  for (auto *k : kernels)
++    nmd->addOperand(llvm::cast<llvm::MDNode>(k));
++}
++
+ /// Emit lazy definitions that have to be emitted in this specific
+ /// IRGenModule.
+ void IRGenModule::emitLazyPrivateDefinitions() {
+diff --git a/lib/IRGen/IRGenModule.h b/lib/IRGen/IRGenModule.h
+index 09a5c16e761..e77934b8604 100644
+--- a/lib/IRGen/IRGenModule.h
++++ b/lib/IRGen/IRGenModule.h
+@@ -1498,6 +1498,8 @@ private:
+   void emitGlobalLists();
+   void emitAutolinkInfo();
+   void cleanupClangCodeGenMetadata();
++  /// swift-metal: emit !swiftgpu.kernels metadata for @Compute functions.
++  void emitSwiftGPUKernelMetadata();
+ 
+ //--- Remote reflection metadata --------------------------------------------
+ public:
+diff --git a/lib/IRGen/IRGenSIL.cpp b/lib/IRGen/IRGenSIL.cpp
+index ced384bd7be..b65871afe51 100644
+--- a/lib/IRGen/IRGenSIL.cpp
++++ b/lib/IRGen/IRGenSIL.cpp
+@@ -3284,7 +3284,16 @@ void IRGenSILFunction::visitGlobalAddrInst(GlobalAddrInst *i) {
+     SILType loweredTyInContext =
+         var->getLoweredTypeInContext(getExpansionContext());
+     auto &tiInContext = getTypeInfo(loweredTyInContext);
+-    auto ptr = Builder.CreateBitOrPointerCast(addr.getAddress(), IGM.PtrTy);
++    // swift-metal: a GPU constant global lives in a non-default address space
++    // (AIR addrspace 2). Preserve it — casting to the default `IGM.PtrTy`
++    // (addrspace 0) is an invalid cross-address-space bitcast, and the loads
++    // rooted here must stay in the constant address space.
++    unsigned addrSpace = addr.getAddress()->getType()->getPointerAddressSpace();
++    llvm::Type *ptrTy =
++        addrSpace == IGM.PtrTy->getPointerAddressSpace()
++            ? IGM.PtrTy
++            : llvm::PointerType::get(IGM.getLLVMContext(), addrSpace);
++    auto ptr = Builder.CreateBitOrPointerCast(addr.getAddress(), ptrTy);
+     addr = Address(ptr, tiInContext.getStorageType(),
+                    tiInContext.getBestKnownAlignment());
+     return addr;
+@@ -7414,8 +7423,16 @@ void IRGenSILFunction::visitAddressToPointerInst(swift::AddressToPointerInst *i)
+ {
+   Explosion to;
+   llvm::Value *addrValue = getLoweredAddress(i->getOperand()).getAddress();
+-  if (addrValue->getType() != IGM.Int8PtrTy)
+-    addrValue = Builder.CreateBitCast(addrValue, IGM.Int8PtrTy);
++  // swift-metal: preserve a non-default address space (device/constant/
++  // threadgroup) — casting a `ptr addrspace(N)` to the default addrspace-0
++  // `Int8PtrTy` is an invalid cross-address-space bitcast. This lets device
++  // pointer arithmetic (`p + i`) and `&buf[i]` work (e.g. for atomics).
++  unsigned as = addrValue->getType()->getPointerAddressSpace();
++  llvm::Type *destTy =
++      as == 0 ? IGM.Int8PtrTy
++              : llvm::PointerType::get(IGM.getLLVMContext(), as);
++  if (addrValue->getType() != destTy)
++    addrValue = Builder.CreateBitCast(addrValue, destTy);
+   to.add(addrValue);
+   setLoweredExplosion(i, to);
+ }
+@@ -7428,7 +7445,13 @@ void IRGenSILFunction::visitPointerToAddressInst(swift::PointerToAddressInst *i)
+ 
+   auto &ti = getTypeInfo(i->getType());
+ 
+-  ptrValue = Builder.CreateBitCast(ptrValue, IGM.PtrTy);
++  // swift-metal: preserve the incoming pointer's address space (device/etc.)
++  // instead of forcing addrspace 0, so the resulting Address and all loads/
++  // stores built on it stay in the GPU address space.
++  unsigned addrSpace =
++      cast<llvm::PointerType>(ptrValue->getType())->getAddressSpace();
++  ptrValue = Builder.CreateBitCast(
++      ptrValue, llvm::PointerType::get(IGM.getLLVMContext(), addrSpace));
+ 
+   if (i->alignment())
+     setLoweredAddress(i, Address(ptrValue, ti.getStorageType(),
+diff --git a/lib/IRGen/MetadataRequest.cpp b/lib/IRGen/MetadataRequest.cpp
+index ce2e8e500a9..d48786d768c 100644
+--- a/lib/IRGen/MetadataRequest.cpp
++++ b/lib/IRGen/MetadataRequest.cpp
+@@ -1874,6 +1874,13 @@ namespace {
+       return MetadataResponse::forComplete(IGF.IGM.getAddrOfTypeMetadata(type));
+     }
+ 
++    // swift-metal: runtime metadata for a GPU-address-space pointer is that of
++    // its underlying pointer type (the address space is a codegen-only detail).
++    MetadataResponse visitAddressSpaceType(CanAddressSpaceType type,
++                                           DynamicMetadataRequest request) {
++      return visit(type.getObjectType(), request);
++    }
++
+     /// The given type should use opaque type info.  We assume that
+     /// the runtime always provides an entry for such a type.
+     MetadataResponse visitBuiltinIntegerType(CanBuiltinIntegerType type,
+diff --git a/lib/Parse/ParseDecl.cpp b/lib/Parse/ParseDecl.cpp
+index f56e7f5f282..8bf5d26481b 100644
+--- a/lib/Parse/ParseDecl.cpp
++++ b/lib/Parse/ParseDecl.cpp
+@@ -3422,7 +3422,47 @@ ParserStatus Parser::parseNewDeclAttribute(DeclAttributes &Attributes,
+ 
+     Attributes.add(new (Context) AlignmentAttr(alignmentValue, AtLoc, range,
+                                                /*implicit*/ false));
+-    
++
++    break;
++  }
++
++  case DeclAttrKind::Binding: {
++    // swift-metal: @Binding(to: N) — bind a kernel parameter to slot N.
++    if (!consumeIfAttributeLParen()) {
++      diagnose(Loc, diag::attr_expected_lparen, AttrName,
++               DeclAttribute::isDeclModifier(DK));
++      return makeParserSuccess();
++    }
++
++    // Optional 'to:' argument label.
++    if (Tok.is(tok::identifier) && Tok.getText() == "to" &&
++        peekToken().is(tok::colon)) {
++      consumeToken(tok::identifier);
++      consumeToken(tok::colon);
++    }
++
++    if (Tok.isNot(tok::integer_literal)) {
++      diagnose(Loc, diag::binding_index_must_be_integer);
++      return makeParserSuccess();
++    }
++
++    unsigned bindingIndex;
++    if (Tok.getText().getAsInteger(0, bindingIndex)) {
++      diagnose(Loc, diag::binding_index_must_be_integer);
++      return makeParserSuccess();
++    }
++
++    consumeToken(tok::integer_literal);
++    auto range = SourceRange(Loc, Tok.getRange().getStart());
++
++    if (!consumeIf(tok::r_paren)) {
++      diagnose(Loc, diag::attr_expected_rparen, AttrName,
++               DeclAttribute::isDeclModifier(DK));
++      return makeParserSuccess();
++    }
++
++    Attributes.add(new (Context) BindingAttr(bindingIndex, AtLoc, range,
++                                             /*implicit*/ false));
+     break;
+   }
+ 
+diff --git a/lib/SIL/IR/TypeLowering.cpp b/lib/SIL/IR/TypeLowering.cpp
+index 6bfac0829a8..18a62640e9a 100644
+--- a/lib/SIL/IR/TypeLowering.cpp
++++ b/lib/SIL/IR/TypeLowering.cpp
+@@ -639,6 +639,14 @@ namespace {
+                          IsTypeExpansionSensitive_t) {
+       llvm_unreachable("shouldn't get an inout type here");
+     }
++    RetTy visitAddressSpaceType(CanAddressSpaceType type,
++                                AbstractionPattern origType,
++                                IsTypeExpansionSensitive_t isSensitive) {
++      // swift-metal: a GPU-address-space pointer is a trivial, loadable,
++      // pointer-sized value (like Builtin.RawPointer).
++      return asImpl().handleTrivial(type,
++                                    getTrivialSILTypeProperties(isSensitive));
++    }
+     RetTy visitErrorType(CanErrorType type,
+                          AbstractionPattern origType,
+                          IsTypeExpansionSensitive_t isSensitive) {
+@@ -3883,6 +3891,18 @@ TypeConverter::computeLoweredRValueType(TypeExpansionContext forExpansion,
+       return silFnTy->substituteOpaqueArchetypes(TC, forExpansion);
+     }
+ 
++    CanType visitAddressSpaceType(CanAddressSpaceType type) {
++      // swift-metal: a GPU-address-space qualifier describes WHERE a value lives,
++      // not its value representation. On a raw pointer it IS the representation
++      // (`ptr addrspace(N)`), so keep it — this is UnsafePointer<device T>'s
++      // storage field. On an ordinary value it drops on load (a loaded
++      // `device Float` is just a `Float`). It also persists as the generic
++      // argument of UnsafePointer<device T> (a nominal, not recursed into here).
++      if (isa<BuiltinRawPointerType>(type.getObjectType()))
++        return type;
++      return visit(type.getObjectType());
++    }
++
+     CanType visitType(CanType substType) {
+       // Lower the object type of optional types.
+       if (auto substObjectType = substType.getOptionalObjectType()) {
+@@ -5129,6 +5149,12 @@ public:
+                             CanPackElementType type2) {
+     return false;
+   }
++  bool visitAddressSpaceType(CanAddressSpaceType type1,
++                             CanAddressSpaceType type2) {
++    if (type1->getAddressSpace() != type2->getAddressSpace())
++      return true;
++    return visit(type1.getObjectType(), type2.getObjectType());
++  }
+ 
+   // We also need to handle the general case where we have different
+   // kinds of substitutable types.
+diff --git a/lib/SILGen/SILGenApply.cpp b/lib/SILGen/SILGenApply.cpp
+index 17f51fbb802..84ec59303ae 100644
+--- a/lib/SILGen/SILGenApply.cpp
++++ b/lib/SILGen/SILGenApply.cpp
+@@ -732,6 +732,14 @@ public:
+       auto proto = cast<ProtocolDecl>(Constant.getDecl()->getDeclContext());
+       auto selfType = proto->getSelfInterfaceType()->getCanonicalType();
+       auto lookupType = selfType.subst(Substitutions)->getCanonicalType();
++      // swift-metal: a GPU address-space qualifier on a value is transparent to
++      // witness dispatch (Self is e.g. `device UInt32` when a protocol operator
++      // like FixedWidthInteger.&* is applied to a value loaded from a device
++      // pointer). The conformance is the unqualified type's, so strip the
++      // qualifier from the witness_method lookup type to match it (the value's
++      // address space drops at lowering).
++      if (auto asTy = dyn_cast<AddressSpaceType>(lookupType))
++        lookupType = asTy->getObjectType()->getCanonicalType();
+       auto conformance = Substitutions.lookupConformance(selfType, proto);
+ 
+       ArgumentScope S(SGF, Loc);
+diff --git a/lib/SILOptimizer/Mandatory/CMakeLists.txt b/lib/SILOptimizer/Mandatory/CMakeLists.txt
+index 1831ee78031..24e72f48a73 100644
+--- a/lib/SILOptimizer/Mandatory/CMakeLists.txt
++++ b/lib/SILOptimizer/Mandatory/CMakeLists.txt
+@@ -13,6 +13,7 @@ target_sources(swiftSILOptimizer PRIVATE
+   DefiniteInitialization.cpp
+   DIMemoryUseCollector.cpp
+   DataflowDiagnostics.cpp
++  DiagnoseGPUUnsafe.cpp
+   DiagnoseInvalidEscapingCaptures.cpp
+   DiagnoseLifetimeIssues.cpp
+   DiagnoseStaticExclusivity.cpp
+diff --git a/lib/SILOptimizer/Mandatory/DiagnoseGPUUnsafe.cpp b/lib/SILOptimizer/Mandatory/DiagnoseGPUUnsafe.cpp
+new file mode 100644
+index 00000000000..8b2a1364bb1
+--- /dev/null
++++ b/lib/SILOptimizer/Mandatory/DiagnoseGPUUnsafe.cpp
+@@ -0,0 +1,241 @@
++//===--- DiagnoseGPUUnsafe.cpp --------------------------------------------===//
++//
++// This source file is part of the Swift.org open source project
++//
++// Copyright (c) 2014 - 2024 Apple Inc. and the Swift project authors
++// Licensed under Apache License v2.0 with Runtime Library Exception
++//
++// See https://swift.org/LICENSE.txt for license information
++//
++//===----------------------------------------------------------------------===//
++///
++/// swift-metal: reject GPU-unsafe constructs anywhere in the call graph
++/// reachable from a `@Compute` kernel.
++///
++/// The AST-level checker (`checkGPUKernel` in Sema) handles the kernel's own
++/// signature and body literals. This is the complementary, airtight half: it
++/// follows the kernel's transitive calls into *user helper functions* and flags,
++/// structurally in SIL, things that need the (absent) GPU runtime:
++///   - heap allocation (`alloc_ref`, `alloc_box`, `alloc_existential_box`)
++///   - recursion (a cycle in the call graph — the GPU has no call stack)
++///
++/// It scans only functions defined in the module being compiled (user code),
++/// not serialized stdlib functions, and runs on the canonical SILModule (after
++/// mandatory inlining), so it sees the real, de-wrapped call graph without
++/// false-flagging stdlib internals. It is a no-op unless the module contains a
++/// kernel. It runs as a direct call from `runSILDiagnosticPasses` rather than a
++/// pass-manager pass (the fork's pass manager is Swift-only for new passes).
++///
++//===----------------------------------------------------------------------===//
++
++#define DEBUG_TYPE "diagnose-gpu-unsafe"
++#include "swift/AST/Attr.h"
++#include "swift/AST/DiagnosticEngine.h"
++#include "swift/AST/DiagnosticsSema.h"
++#include "swift/Demangling/Demangle.h"
++#include "swift/SIL/ApplySite.h"
++#include "swift/SIL/SILFunction.h"
++#include "swift/SIL/SILInstruction.h"
++#include "swift/SIL/SILModule.h"
++#include "swift/SILOptimizer/PassManager/Passes.h"
++#include "llvm/ADT/SmallPtrSet.h"
++#include "llvm/ADT/SmallVector.h"
++#include <functional>
++
++using namespace swift;
++
++namespace {
++
++/// Is `fn` user code from the module being compiled (as opposed to a serialized
++/// import like the standard library, or an intrinsic declaration)?
++static bool isUserCode(SILFunction *fn) {
++  return fn && !fn->empty() && !fn->isSerialized() &&
++         !fn->isExternalDeclaration();
++}
++
++/// True if `fn` is a GPU compute kernel (its decl carries `@Compute`).
++static bool isComputeKernel(SILFunction *fn) {
++  if (auto *decl = fn->getLocation().getAsASTNode<ValueDecl>())
++    return decl->getAttrs().hasAttribute<ComputeAttr>();
++  return false;
++}
++
++class GPUUnsafeChecker {
++  DiagnosticEngine &Diags;
++
++  /// Flag the unsafe allocation instructions in `fn`. `kernel` is the entry
++  /// kernel it was reached from (for the note); null if `fn` *is* the kernel.
++  void scanFunction(SILFunction *fn, SILFunction *kernel) {
++    for (auto &bb : *fn) {
++      for (auto &inst : bb) {
++        StringRef what;
++        if (isa<AllocRefInst>(inst) || isa<AllocRefDynamicInst>(inst))
++          what = "a class instance (needs ARC / the heap)";
++        else if (isa<AllocBoxInst>(inst))
++          what = "a heap-allocated box (an escaping capture)";
++        else if (isa<AllocExistentialBoxInst>(inst))
++          what = "a boxed existential";
++        if (what.empty())
++          continue;
++        Diags.diagnose(inst.getLoc().getSourceLoc(), diag::gpu_unsafe_sil, what);
++        if (kernel)
++          Diags.diagnose(fn->getLocation().getSourceLoc(),
++                         diag::gpu_reached_from_kernel, kernel->getName(), "");
++      }
++    }
++  }
++
++public:
++  GPUUnsafeChecker(DiagnosticEngine &diags) : Diags(diags) {}
++
++  /// DFS the call graph from `kernel`, scanning each reachable user function
++  /// once and reporting call-graph cycles as recursion.
++  void walkKernel(SILFunction *kernel) {
++    llvm::SmallPtrSet<SILFunction *, 16> visited;
++    llvm::SmallPtrSet<SILFunction *, 16> onPath;
++    bool reportedRecursion = false;
++
++    std::function<void(SILFunction *, bool)> dfs = [&](SILFunction *fn,
++                                                       bool isEntry) {
++      if (!onPath.insert(fn).second) {
++        // Back-edge: `fn` is already on the current DFS path → recursion.
++        if (!reportedRecursion) {
++          Diags.diagnose(fn->getLocation().getSourceLoc(), diag::gpu_recursion);
++          if (fn != kernel)
++            Diags.diagnose(kernel->getLocation().getSourceLoc(),
++                           diag::gpu_reached_from_kernel, kernel->getName(), "");
++          reportedRecursion = true;
++        }
++        return;
++      }
++      if (visited.insert(fn).second)
++        scanFunction(fn, isEntry ? nullptr : kernel);
++
++      for (auto &bb : *fn)
++        for (auto &inst : bb)
++          if (auto apply = FullApplySite::isa(&inst)) {
++            SILFunction *callee = apply.getReferencedFunctionOrNull();
++            if (isUserCode(callee))
++              dfs(callee, /*isEntry=*/false);
++          }
++      onPath.erase(fn);
++    };
++
++    dfs(kernel, /*isEntry=*/true);
++  }
++};
++
++} // end anonymous namespace
++
++/// Collect the `@Compute` kernels defined in `M`.
++static void collectKernels(SILModule &M,
++                           llvm::SmallVectorImpl<SILFunction *> &kernels) {
++  for (auto &fn : M)
++    if (isUserCode(&fn) && isComputeKernel(&fn))
++      kernels.push_back(&fn);
++}
++
++void swift::diagnoseGPUUnsafeConstructs(SILModule &M) {
++  llvm::SmallVector<SILFunction *, 4> kernels;
++  collectKernels(M, kernels);
++  if (kernels.empty())
++    return;
++
++  GPUUnsafeChecker checker(M.getASTContext().Diags);
++  for (auto *kernel : kernels)
++    checker.walkKernel(kernel);
++}
++
++namespace {
++
++/// The airtight post-optimization backstop. After full `-O` (inlining,
++/// specialization, dead-code elimination), only code the kernel actually reaches
++/// remains — so it is now safe to recurse into stdlib functions too, and flag:
++///   - any surviving heap allocation (`alloc_ref`/`alloc_box`/…), and
++///   - a call to an *external* function that has no GPU implementation and is not
++///     an `air.*` intrinsic — an unresolvable runtime/standard-library
++///     dependency (e.g. a random-number source or an allocator that would emit a
++///     call to an undefined symbol on the GPU).
++///
++/// This closes the gap the pre-`-O` check leaves: an unsafe construct entirely
++/// inside a non-inlined *serialized stdlib* function. It only runs when the
++/// pre-`-O` check found nothing (that check bails the pipeline before
++/// optimization), so there is no double reporting.
++class GPUPostOptChecker {
++  DiagnosticEngine &Diags;
++  llvm::SmallPtrSet<SILFunction *, 32> visited;
++  llvm::SmallPtrSet<const void *, 32> reportedLocs;
++
++  bool alreadyReported(SILLocation loc) {
++    return !reportedLocs.insert(loc.getSourceLoc().getOpaquePointerValue())
++                .second;
++  }
++
++  void visit(SILFunction *fn, SILFunction *kernel, bool isEntry) {
++    if (!visited.insert(fn).second)
++      return;
++    for (auto &bb : *fn) {
++      for (auto &inst : bb) {
++        // Surviving heap allocation.
++        if (isa<AllocRefInst>(inst) || isa<AllocRefDynamicInst>(inst) ||
++            isa<AllocBoxInst>(inst) || isa<AllocExistentialBoxInst>(inst)) {
++          if (!alreadyReported(inst.getLoc())) {
++            Diags.diagnose(inst.getLoc().getSourceLoc(), diag::gpu_unsafe_sil,
++                           "a heap allocation");
++            if (!isEntry)
++              Diags.diagnose(kernel->getLocation().getSourceLoc(),
++                             diag::gpu_reached_from_kernel, kernel->getName(),
++                             "");
++          }
++        }
++        // Call into the reachable graph.
++        auto apply = FullApplySite::isa(&inst);
++        if (!apply)
++          continue;
++        SILFunction *callee = apply.getReferencedFunctionOrNull();
++        if (!callee)
++          continue; // indirect (devirtualization already ran); leave to codegen
++        if (!callee->empty() && !callee->isExternalDeclaration()) {
++          visit(callee, kernel, /*isEntry=*/false);
++          continue;
++        }
++        // An external callee with no body: fine only if it is an AIR intrinsic
++        // (the driver provides it). Anything else is an unresolvable symbol.
++        StringRef name = callee->getName();
++        if (name.starts_with("air."))
++          continue;
++        if (alreadyReported(inst.getLoc()))
++          continue;
++        // Inlining can strip the call-site location; fall back to the enclosing
++        // function, then the kernel, so the error always points somewhere real.
++        SourceLoc loc = inst.getLoc().getSourceLoc();
++        if (loc.isInvalid())
++          loc = fn->getLocation().getSourceLoc();
++        if (loc.isInvalid())
++          loc = kernel->getLocation().getSourceLoc();
++        std::string pretty = Demangle::demangleSymbolAsString(name);
++        Diags.diagnose(loc, diag::gpu_unavailable_symbol,
++                       pretty.empty() ? name : StringRef(pretty));
++        Diags.diagnose(kernel->getLocation().getSourceLoc(),
++                       diag::gpu_reached_from_kernel, kernel->getName(), "");
++      }
++    }
++  }
++
++public:
++  GPUPostOptChecker(DiagnosticEngine &diags) : Diags(diags) {}
++  void run(SILFunction *kernel) { visit(kernel, kernel, /*isEntry=*/true); }
++};
++
++} // end anonymous namespace
++
++void swift::diagnoseGPUUnsafePostOpt(SILModule &M) {
++  llvm::SmallVector<SILFunction *, 4> kernels;
++  collectKernels(M, kernels);
++  if (kernels.empty())
++    return;
++
++  GPUPostOptChecker checker(M.getASTContext().Diags);
++  for (auto *kernel : kernels)
++    checker.run(kernel);
++}
+diff --git a/lib/SILOptimizer/PassManager/Passes.cpp b/lib/SILOptimizer/PassManager/Passes.cpp
+index d277b8d98ae..603b352165e 100644
+--- a/lib/SILOptimizer/PassManager/Passes.cpp
++++ b/lib/SILOptimizer/PassManager/Passes.cpp
+@@ -92,6 +92,11 @@ bool swift::runSILDiagnosticPasses(SILModule &Module, bool RunSILGenPasses) {
+   // Generate diagnostics.
+   Module.setStage(SILStage::Canonical);
+ 
++  // swift-metal: enforce the GPU-safe subset across the call graph reachable
++  // from @Compute kernels (heap allocation, recursion). Runs on the canonical
++  // module — after mandatory inlining, so trivial wrappers are gone.
++  diagnoseGPUUnsafeConstructs(Module);
++
+   // Verify the module, if required.
+   if (opts.VerifyAll)
+     Module.verify();
+diff --git a/lib/Sema/CSApply.cpp b/lib/Sema/CSApply.cpp
+index 31afb42f1c2..e0437c50979 100644
+--- a/lib/Sema/CSApply.cpp
++++ b/lib/Sema/CSApply.cpp
+@@ -7205,6 +7205,24 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
+   // The type we're converting from.
+   Type fromType = cs.getType(expr);
+ 
++  // swift-metal: a coercion that only adds/removes/changes a GPU address-space
++  // qualifier on a VALUE is an identity — the qualifier is transparent to the
++  // register representation (a loaded `device Float` is just a `Float`, and it
++  // may be stored to a `constant`/`device` location). Pointer types differ in
++  // their address space and are never reached here (matchTypes keeps them
++  // distinct via invariant generic-argument matching).
++  if (fromType->is<AddressSpaceType>() || toType->is<AddressSpaceType>()) {
++    Type strippedFrom = fromType, strippedTo = toType;
++    while (auto *as = strippedFrom->getAs<AddressSpaceType>())
++      strippedFrom = as->getObjectType();
++    while (auto *as = strippedTo->getAs<AddressSpaceType>())
++      strippedTo = as->getObjectType();
++    if (strippedFrom->isEqual(strippedTo)) {
++      cs.setType(expr, toType);
++      return expr;
++    }
++  }
++
+   // If the types are already equivalent, we don't have to do anything.
+   if (fromType->isEqual(toType))
+     return expr;
+@@ -7540,6 +7558,9 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
+   // Handle "from specific" coercions before "catch all" coercions.
+   auto desugaredFromType = fromType->getDesugaredType();
+   switch (desugaredFromType->getKind()) {
++  // swift-metal: no special "from" coercion for an address-space pointer.
++  case TypeKind::AddressSpace:
++    break;
+   // Coercions from an lvalue: load or perform implicit address-of. We perform
+   // these coercions first because they are often the first step in a multi-step
+   // coercion.
+@@ -8005,6 +8026,9 @@ Expr *ExprRewriter::coerceToType(Expr *expr, Type toType,
+   // "Catch all" coercions.
+   auto desugaredToType = toType->getDesugaredType();
+   switch (desugaredToType->getKind()) {
++  // swift-metal: no special coercion to an address-space-qualified type.
++  case TypeKind::AddressSpace:
++    break;
+   // Coercions from a type to an existential type.
+   case TypeKind::Existential:
+   case TypeKind::ExistentialMetatype:
+diff --git a/lib/Sema/CSSimplify.cpp b/lib/Sema/CSSimplify.cpp
+index 86a4903d78f..73e29965dc1 100644
+--- a/lib/Sema/CSSimplify.cpp
++++ b/lib/Sema/CSSimplify.cpp
+@@ -7308,6 +7308,35 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
+   if (desugar1->hasError() || desugar2->hasError())
+     return SolutionKind::Error;
+ 
++  // swift-metal: a GPU-address-space-qualified pointer (@Device etc.) is
++  // transparent for type-checking — it matches its underlying pointer type.
++  // The qualifier is not stripped from the value, so codegen still lowers it to
++  // `ptr addrspace(N)`.
++  // For CONVERSIONS (not invariant Equal/Bind, which match generic arguments —
++  // where UnsafePointer<device T> and UnsafePointer<constant T> must stay
++  // distinct so pointer address spaces never mix), an address-space-qualified
++  // VALUE converts as its underlying type: the qualifier drops on load, so a
++  // `device Float` is usable in arithmetic and a `constant Float` value is
++  // assignable to a `device Float` location. Don't look through a type variable
++  // (a generic parameter like Element must bind to the *qualified* pointee).
++  //
++  // Value-generic operators on qualified vectors (e.g. `device SIMD4<Float> *
++  // 2.0`) work via a small set of transparency points where the qualifier is
++  // taken to describe *storage*, not the value: associated-type resolution
++  // (ConstraintSystem::simplifyType), member substitution
++  // (TypeBase::getContextSubstitutions), and witness-method lookup during
++  // inlining (SILCloner::visitWitnessMethodInst) all resolve against the
++  // unqualified object type, while the value's address space drops at SIL
++  // lowering (TypeLowering::visitAddressSpaceType). See docs/address-spaces.md.
++  if (kind != ConstraintKind::Equal && kind != ConstraintKind::Bind) {
++    if (auto *as1 = dyn_cast<AddressSpaceType>(desugar1))
++      if (!desugar2->isTypeVariableOrMember())
++        return matchTypes(as1->getObjectType(), type2, kind, flags, locator);
++    if (auto *as2 = dyn_cast<AddressSpaceType>(desugar2))
++      if (!desugar1->isTypeVariableOrMember())
++        return matchTypes(type1, as2->getObjectType(), kind, flags, locator);
++  }
++
+   // If both sides are dependent members without type variables, it's
+   // possible that base type is incorrect e.g. `Foo.Element` where `Foo`
+   // is a concrete type substituted for generic parameter,
+@@ -7636,6 +7665,10 @@ ConstraintSystem::matchTypes(Type type1, Type type2, ConstraintKind kind,
+     getDefaultDecompositionOptions(flags) - TMF_ApplyingFix;
+   if (desugar1->getKind() == desugar2->getKind()) {
+     switch (desugar1->getKind()) {
++    // swift-metal: address-space-qualified pointers decompose no further here;
++    // conversions are handled below.
++    case TypeKind::AddressSpace:
++      break;
+ #define SUGARED_TYPE(id, parent) case TypeKind::id:
+ #define ARTIFICIAL_TYPE(id, parent) case TypeKind::id:
+ #define TYPE(id, parent)
+@@ -8637,7 +8670,14 @@ ConstraintSystem::simplifyConstructionConstraint(
+   // Desugar the value type.
+   auto desugarValueType = valueType->getDesugaredType();
+ 
++  // swift-metal: look through a GPU address-space qualifier for member lookup —
++  // the members are those of the underlying pointer type (e.g. UnsafePointer).
++  if (auto *asTy = desugarValueType->getAs<AddressSpaceType>())
++    desugarValueType = asTy->getObjectType()->getDesugaredType();
++
+   switch (desugarValueType->getKind()) {
++  case TypeKind::AddressSpace:
++    llvm_unreachable("address space qualifier looked through above");
+ #define SUGARED_TYPE(id, parent) case TypeKind::id:
+ #define ARTIFICIAL_TYPE(id, parent) case TypeKind::id:
+ #define TYPE(id, parent)
+@@ -10468,6 +10508,14 @@ performMemberLookup(ConstraintKind constraintKind, DeclNameRef memberName,
+                     ConstraintLocator *memberLocator,
+                     bool includeInaccessibleMembers) {
+   Type baseObjTy = baseTy->getRValueType();
++
++  // swift-metal: look through a GPU address-space qualifier (@Device etc.) for
++  // member and subscript lookup — the members are those of the underlying
++  // pointer type (e.g. UnsafeMutablePointer). The address space is preserved on
++  // the value itself for codegen.
++  if (auto *asTy = baseObjTy->getAs<AddressSpaceType>())
++    baseObjTy = asTy->getObjectType();
++
+   Type instanceTy = baseObjTy;
+ 
+   auto &ctx = getASTContext();
+diff --git a/lib/Sema/ConstraintSystem.cpp b/lib/Sema/ConstraintSystem.cpp
+index 6999578454f..ee553fc88d3 100644
+--- a/lib/Sema/ConstraintSystem.cpp
++++ b/lib/Sema/ConstraintSystem.cpp
+@@ -1714,6 +1714,13 @@ struct TypeSimplifier : public TypeTransform<TypeSimplifier> {
+       if (auto selfType = lookupBaseType->getAs<DynamicSelfType>())
+         lookupBaseType = selfType->getSelfType();
+ 
++      // swift-metal: a GPU address-space qualifier (device/constant/threadgroup/
++      // thread) is transparent to associated-type resolution — the qualifier
++      // lives on storage, not the value, so `device SIMD4<Float>.Scalar` is just
++      // `Float`. Resolve the witness against the unqualified object type.
++      if (auto *asTy = lookupBaseType->getAs<AddressSpaceType>())
++        lookupBaseType = asTy->getObjectType();
++
+       if (lookupBaseType->mayHaveMembers() ||
+           lookupBaseType->is<PackType>()) {
+         auto *proto = assocType->getProtocol();
+diff --git a/lib/Sema/MiscDiagnostics.cpp b/lib/Sema/MiscDiagnostics.cpp
+index 70a68adc308..e85f4d52081 100644
+--- a/lib/Sema/MiscDiagnostics.cpp
++++ b/lib/Sema/MiscDiagnostics.cpp
+@@ -4703,6 +4703,123 @@ performTopLevelDeclDiagnostics(TopLevelCodeDecl *TLCD) {
+ }
+ 
+ /// Perform diagnostics for func/init/deinit declarations.
++//===----------------------------------------------------------------------===//
++// swift-metal: GPU-safe subset enforcement.
++//
++// A `@Compute` kernel runs on the GPU, which has no Swift runtime: no heap, no
++// ARC, no stack for recursion, no error-box allocation, no dynamic dispatch via
++// witness tables. Writing an unsupported construct otherwise fails deep in the
++// pipeline (a SIL-verifier abort, a metal-as parse error, or a driver crash) with
++// no source location. These checks turn that into a clear diagnostic at the
++// offending expression, up front.
++//===----------------------------------------------------------------------===//
++namespace {
++
++/// True if `ty` (a value/return/local type in kernel code) requires the Swift
++/// runtime — a class (ARC), an existential (`any P` — witness tables), or a
++/// heap-backed standard type (Array/String/Dictionary/Set).
++static bool gpuUnsafeType(Type ty, StringRef &why) {
++  if (!ty || ty->hasError()) return false;
++  ty = ty->getReferenceStorageReferent();
++  if (ty->getClassOrBoundGenericClass()) {
++    why = "a class instance (needs ARC)";
++    return true;
++  }
++  if (ty->isAnyExistentialType()) {
++    why = "an existential (needs witness tables)";
++    return true;
++  }
++  if (auto *nom = ty->getAnyNominal()) {
++    StringRef n = nom->getName().str();
++    if (n == "Array" || n == "ContiguousArray" || n == "String" ||
++        n == "Substring" || n == "Dictionary" || n == "Set")
++      { why = "a heap-allocated standard-library type"; return true; }
++  }
++  return false;
++}
++
++/// Walks a kernel body flagging GPU-unsafe expressions.
++class GPUSafetyWalker : public ASTWalker {
++  DiagnosticEngine &Diags;
++  AbstractFunctionDecl *Kernel;
++  StringRef Noun;
++  llvm::SmallPtrSet<const void *, 8> Reported;
++
++  void reject(SourceLoc loc, StringRef construct, StringRef why) {
++    if (loc.isInvalid()) loc = Kernel->getLoc();
++    // One error per source location — a `let x = <unsafe>` would otherwise fire
++    // for both the variable and its initializer expression.
++    if (!Reported.insert(loc.getOpaquePointerValue()).second)
++      return;
++    Diags.diagnose(loc, diag::gpu_unsafe_construct, construct, why);
++    Diags.diagnose(Kernel->getLoc(), diag::gpu_unsafe_in_kernel, Noun,
++                   Kernel->getName());
++  }
++
++public:
++  GPUSafetyWalker(DiagnosticEngine &diags, AbstractFunctionDecl *kernel,
++                  StringRef noun)
++      : Diags(diags), Kernel(kernel), Noun(noun) {}
++
++  MacroWalking getMacroWalkingBehavior() const override {
++    return MacroWalking::Expansion;
++  }
++
++  PreWalkResult<Expr *> walkToExprPre(Expr *E) override {
++    // Checks are type-based, not syntactic: `[1,2,3,4]` as an
++    // `InlineArray`/`SIMD4` literal is GPU-safe, only as `Array` is it not
++    // (likewise a `StaticString` literal vs a `String`).
++    StringRef why;
++    // A call whose result needs the runtime (a class init, or a function
++    // returning Array/String/an existential).
++    if (auto *call = dyn_cast<ApplyExpr>(E)) {
++      if (call->getType() && gpuUnsafeType(call->getType(), why)) {
++        reject(call->getLoc(), "this value", why);
++        return Action::Continue(E);
++      }
++    }
++    // Collection / string literals — including the implicit `[Any]` varargs
++    // array that `print(...)` and friends desugar to.
++    if (isa<ArrayExpr>(E) || isa<DictionaryExpr>(E) ||
++        isa<StringLiteralExpr>(E) || isa<InterpolatedStringLiteralExpr>(E)) {
++      if (E->getType() && gpuUnsafeType(E->getType(), why))
++        reject(E->getLoc(), "this value", why);
++    }
++    return Action::Continue(E);
++  }
++};
++
++/// Signature + body checks for a `@Compute` kernel.
++static void checkGPUKernel(AbstractFunctionDecl *AFD) {
++  if (!AFD->getAttrs().hasAttribute<ComputeAttr>())
++    return;
++  auto &Diags = AFD->getASTContext().Diags;
++  StringRef noun = "kernel";
++
++  // Effects the GPU can't provide.
++  if (AFD->hasThrows())
++    Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_effect, noun, AFD->getName(),
++                   "throws");
++  if (AFD->hasAsync())
++    Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_effect, noun, AFD->getName(),
++                   "async");
++
++  // A compute kernel returns Void (results go through device buffers).
++  if (auto *fd = dyn_cast<FuncDecl>(AFD)) {
++    Type result = fd->getResultInterfaceType();
++    if (result && !result->hasError() && !result->isVoid())
++      Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_nonvoid, noun,
++                     AFD->getName());
++  }
++
++  if (auto *body = AFD->getBody()) {
++    GPUSafetyWalker walker(Diags, AFD, noun);
++    body->walk(walker);
++  }
++}
++
++} // end anonymous namespace
++
+ void swift::performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD) {
+   // Don't produce these diagnostics for implicitly generated code.
+   if (AFD->getLoc().isInvalid() || AFD->isImplicit() || AFD->isInvalid())
+@@ -4717,6 +4834,9 @@ void swift::performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD) {
+     AFD->walk(checker);
+   }
+ 
++  // swift-metal: enforce the GPU-safe subset on @Compute kernels.
++  checkGPUKernel(AFD);
++
+   auto *body = AFD->getBody();
+ 
+   // If the function has an opaque return type, check the return expressions
+diff --git a/lib/Sema/Subtyping.cpp b/lib/Sema/Subtyping.cpp
+index 4e3db31bbcd..6ed648d7018 100644
+--- a/lib/Sema/Subtyping.cpp
++++ b/lib/Sema/Subtyping.cpp
+@@ -568,6 +568,10 @@ swift::constraints::getConversionBehavior(Type type) {
+   case TypeKind::LValue:
+     return ConversionBehavior::LValue;
+ 
++  case TypeKind::AddressSpace:
++    // swift-metal: a GPU-address-space pointer has no special subtyping.
++    return ConversionBehavior::None;
++
+   case TypeKind::Tuple: {
+     auto tupleTy = cast<TupleType>(canType);
+     if (tupleTy->getNumElements() == 0)
+diff --git a/lib/Sema/TypeCheckAttr.cpp b/lib/Sema/TypeCheckAttr.cpp
+index 9cbb6b9e032..6065f982d37 100644
+--- a/lib/Sema/TypeCheckAttr.cpp
++++ b/lib/Sema/TypeCheckAttr.cpp
+@@ -179,6 +179,20 @@ public:
+   bool visitDeclAttribute(DeclAttribute *A) = delete;
+ 
+ #define IGNORED_ATTR(X) void visit##X##Attr(X##Attr *) {}
++  // swift-metal GPU attributes: no per-attribute checks yet (appertainance is
++  // enforced generically by the OnFunc/OnParam requirements).
++  IGNORED_ATTR(Compute)
++  IGNORED_ATTR(ThreadPositionInGrid)
++  IGNORED_ATTR(ThreadPositionInThreadgroup)
++  IGNORED_ATTR(ThreadgroupPositionInGrid)
++  IGNORED_ATTR(ThreadIndexInThreadgroup)
++  IGNORED_ATTR(ThreadsPerThreadgroup)
++  IGNORED_ATTR(ThreadgroupsPerGrid)
++  IGNORED_ATTR(Binding)
++  IGNORED_ATTR(Device)
++  IGNORED_ATTR(Constant)
++  IGNORED_ATTR(Threadgroup)
++  IGNORED_ATTR(Thread)
+   IGNORED_ATTR(AlwaysEmitIntoClient)
+   IGNORED_ATTR(HasInitialValue)
+   IGNORED_ATTR(HasHiddenStoredProperties)
+diff --git a/lib/Sema/TypeCheckDecl.cpp b/lib/Sema/TypeCheckDecl.cpp
+index ff90e114c7f..307bab36b9d 100644
+--- a/lib/Sema/TypeCheckDecl.cpp
++++ b/lib/Sema/TypeCheckDecl.cpp
+@@ -2356,6 +2356,43 @@ getLifetimeDependencies(ASTContext &context, EnumElementDecl *enumElemDecl) {
+                            std::nullopt);
+ }
+ 
++/// swift-metal: if `D` carries a GPU address-space attribute
++/// (@Device/@Constant/@Threadgroup/@Thread) and `ty` is a pointer type, wrap it
++/// in an AddressSpaceType so IRGen lowers it to `ptr addrspace(N)`.
++static Type applyGPUAddressSpace(const ValueDecl *D, Type ty) {
++  if (!ty || ty->hasError())
++    return ty;
++
++  const DeclAttributes &attrs = D->getAttrs();
++  unsigned space;
++  if (attrs.hasAttribute<DeviceAttr>()) space = 1;
++  else if (attrs.hasAttribute<ConstantAttr>()) space = 2;
++  else if (attrs.hasAttribute<ThreadgroupAttr>()) space = 3;
++  else if (attrs.hasAttribute<ThreadAttr>()) space = 0;
++  else return ty;
++
++  // Clang/MSL model: the address space qualifies the POINTEE, not the pointer.
++  // `@Device _ p: UnsafePointer<Float>` becomes `UnsafePointer<device Float>`,
++  // so `p` stays an ordinary UnsafePointer<X> (no coercion wall); IRGen lowers a
++  // pointer to address-space-N memory to `ptr addrspace(N)`.
++  if (auto *bgt = ty->getAs<BoundGenericStructType>()) {
++    StringRef n = bgt->getDecl()->getName().str();
++    if ((n == "UnsafePointer" || n == "UnsafeMutablePointer") &&
++        bgt->getGenericArgs().size() == 1) {
++      Type pointee = bgt->getGenericArgs()[0];
++      Type qualified = AddressSpaceType::get(pointee, space);
++      return BoundGenericType::get(bgt->getDecl(), bgt->getParent(),
++                                   {qualified});
++    }
++  }
++
++  // A bare Builtin.RawPointer has no pointee; qualify it directly.
++  if (ty->is<BuiltinRawPointerType>())
++    return AddressSpaceType::get(ty, space);
++
++  return ty;
++}
++
+ Type
+ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
+   auto &Context = D->getASTContext();
+@@ -2460,7 +2497,7 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
+     if (!PD->getTypeRepr())
+       return ErrorType::get(Context);
+ 
+-    return validateParameterType(PD);
++    return applyGPUAddressSpace(PD, validateParameterType(PD));
+   }
+ 
+   case DeclKind::Var: {
+@@ -2489,7 +2526,9 @@ InterfaceTypeRequest::evaluate(Evaluator &eval, ValueDecl *D) const {
+             TypeChecker::checkReferenceOwnershipAttr(VD, interfaceType, attr);
+     }
+ 
+-    return interfaceType;
++    // swift-metal: a `@Device var p: UnsafePointer<T>` local carries the address
++    // space on its pointee, exactly like a parameter.
++    return applyGPUAddressSpace(VD, interfaceType);
+   }
+ 
+   case DeclKind::Func:
+diff --git a/lib/Sema/TypeCheckDeclOverride.cpp b/lib/Sema/TypeCheckDeclOverride.cpp
+index 50aef6de31b..49c45b50923 100644
+--- a/lib/Sema/TypeCheckDeclOverride.cpp
++++ b/lib/Sema/TypeCheckDeclOverride.cpp
+@@ -1596,6 +1596,19 @@ namespace  {
+     // Please keep these alphabetical.
+     UNINTERESTING_ATTR(AccessControl)
+     UNINTERESTING_ATTR(Alignment)
++    // swift-metal GPU attributes.
++    UNINTERESTING_ATTR(Compute)
++    UNINTERESTING_ATTR(Binding)
++    UNINTERESTING_ATTR(ThreadPositionInGrid)
++    UNINTERESTING_ATTR(ThreadPositionInThreadgroup)
++    UNINTERESTING_ATTR(ThreadgroupPositionInGrid)
++    UNINTERESTING_ATTR(ThreadIndexInThreadgroup)
++    UNINTERESTING_ATTR(ThreadsPerThreadgroup)
++    UNINTERESTING_ATTR(ThreadgroupsPerGrid)
++    UNINTERESTING_ATTR(Device)
++    UNINTERESTING_ATTR(Constant)
++    UNINTERESTING_ATTR(Threadgroup)
++    UNINTERESTING_ATTR(Thread)
+     UNINTERESTING_ATTR(AlwaysEmitIntoClient)
+     UNINTERESTING_ATTR(NeverEmitIntoClient)
+     UNINTERESTING_ATTR(Borrowed)
+diff --git a/lib/Serialization/Deserialization.cpp b/lib/Serialization/Deserialization.cpp
+index bf096d7767c..45b086b6a53 100644
+--- a/lib/Serialization/Deserialization.cpp
++++ b/lib/Serialization/Deserialization.cpp
+@@ -6124,6 +6124,16 @@ llvm::Error DeclDeserializer::deserializeDeclCommon() {
+         break;
+       }
+ 
++      case decls_block::Binding_DECL_ATTR: {
++        bool isImplicit;
++        unsigned index;
++        serialization::decls_block::BindingDeclAttrLayout::readRecord(
++            scratch, isImplicit, index);
++        Attr = new (ctx) BindingAttr(index, SourceLoc(), SourceRange(),
++                                     isImplicit);
++        break;
++      }
++
+       case decls_block::SwiftNativeObjCRuntimeBase_DECL_ATTR: {
+         bool isImplicit;
+         IdentifierID nameID;
+diff --git a/lib/Serialization/ModuleFormat.h b/lib/Serialization/ModuleFormat.h
+index d83e4e0fdfe..c3546d4a6e9 100644
+--- a/lib/Serialization/ModuleFormat.h
++++ b/lib/Serialization/ModuleFormat.h
+@@ -2352,6 +2352,12 @@ namespace decls_block {
+     BCFixed<1>, // implicit flag
+     BCVBR<8>    // alignment
+   >;
++
++  using BindingDeclAttrLayout = BCRecordLayout<
++    Binding_DECL_ATTR,
++    BCFixed<1>, // implicit flag
++    BCVBR<8>    // binding slot index (swift-metal)
++  >;
+   
+   using RawLayoutDeclAttrLayout = BCRecordLayout<
+     RawLayout_DECL_ATTR,
+diff --git a/lib/Serialization/Serialization.cpp b/lib/Serialization/Serialization.cpp
+index 36c4d3afe36..77b2b51052b 100644
+--- a/lib/Serialization/Serialization.cpp
++++ b/lib/Serialization/Serialization.cpp
+@@ -3167,6 +3167,15 @@ class Serializer::DeclSerializer : public DeclVisitor<DeclSerializer> {
+       return;
+     }
+ 
++    case DeclAttrKind::Binding: {
++      auto *theBinding = cast<BindingAttr>(DA);
++      auto abbrCode = S.DeclTypeAbbrCodes[BindingDeclAttrLayout::Code];
++      BindingDeclAttrLayout::emitRecord(S.Out, S.ScratchRecord, abbrCode,
++                                        theBinding->isImplicit(),
++                                        theBinding->getIndex());
++      return;
++    }
++
+     case DeclAttrKind::SwiftNativeObjCRuntimeBase: {
+       auto *theBase = cast<SwiftNativeObjCRuntimeBaseAttr>(DA);
+       auto abbrCode
+@@ -5839,6 +5848,7 @@ public:
+   UNSUPPORTED_TYPE(Module)
+   UNSUPPORTED_TYPE(InOut)
+   UNSUPPORTED_TYPE(LValue)
++  UNSUPPORTED_TYPE(AddressSpace)
+   UNSUPPORTED_TYPE(TypeVariable)
+   UNSUPPORTED_TYPE(ErrorUnion)
+   UNSUPPORTED_TYPE(Join)
