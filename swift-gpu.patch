@@ -47,10 +47,10 @@ index 4259916d6e9..eede853db94 100644
  ///
  /// This attribute indicates a class that should be treated semantically
 diff --git a/include/swift/AST/DeclAttr.def b/include/swift/AST/DeclAttr.def
-index a43e267815b..dcf01b6fef8 100644
+index a43e267815b..2cf9b487821 100644
 --- a/include/swift/AST/DeclAttr.def
 +++ b/include/swift/AST/DeclAttr.def
-@@ -933,7 +933,62 @@ DECL_ATTR(com, COM,
+@@ -933,7 +933,90 @@ DECL_ATTR(com, COM,
    ABIBreakingToAdd | ABIBreakingToRemove | APIBreakingToAdd | APIBreakingToRemove | ForbiddenInABIAttr,
    176)
  
@@ -109,8 +109,36 @@ index a43e267815b..dcf01b6fef8 100644
 +  OnParam | OnVar,
 +  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
 +  188)
++// swift-metal: graphics-pipeline stage entry points.
++// @Vertex / @Fragment mark a function as a vertex / fragment shader.
++SIMPLE_DECL_ATTR(Vertex, Vertex,
++  OnFunc,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  189)
++SIMPLE_DECL_ATTR(Fragment, Fragment,
++  OnFunc,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  190)
++// Graphics vertex-stage builtins, applied to scalar vertex parameters.
++SIMPLE_DECL_ATTR(VertexID, VertexID,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  191)
++SIMPLE_DECL_ATTR(InstanceID, InstanceID,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  192)
++// SIMD-group position builtins, applied to scalar kernel parameters.
++SIMPLE_DECL_ATTR(ThreadIndexInSimdgroup, ThreadIndexInSimdgroup,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  193)
++SIMPLE_DECL_ATTR(SimdgroupIndexInThreadgroup, SimdgroupIndexInThreadgroup,
++  OnParam,
++  ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove | UnconstrainedInABIAttr,
++  194)
 +
-+LAST_DECL_ATTR(Thread)
++LAST_DECL_ATTR(SimdgroupIndexInThreadgroup)
  
  #undef DECL_ATTR_ALIAS
  #undef CONTEXTUAL_DECL_ATTR_ALIAS
@@ -417,10 +445,10 @@ index 0a0c21e28d6..a81e32ed92e 100644
    assert(!objectTy->is<LValueType>() && !objectTy->is<InOutType>() &&
           "cannot have 'inout' or @lvalue wrapped inside an @lvalue");
 diff --git a/lib/AST/ASTDumper.cpp b/lib/AST/ASTDumper.cpp
-index bc023c6e456..5bbeede44fe 100644
+index bc023c6e456..ac07d5c0761 100644
 --- a/lib/AST/ASTDumper.cpp
 +++ b/lib/AST/ASTDumper.cpp
-@@ -5192,6 +5192,18 @@ public:
+@@ -5192,6 +5192,24 @@ public:
    TRIVIAL_ATTR_PRINTER(Nonexhaustive, nonexhaustive)
    TRIVIAL_ATTR_PRINTER(Concurrent, concurrent)
    TRIVIAL_ATTR_PRINTER(UnsafeSelfDependentResult, unsafe_self_dependent_result)
@@ -436,10 +464,16 @@ index bc023c6e456..5bbeede44fe 100644
 +  TRIVIAL_ATTR_PRINTER(Constant, constant)
 +  TRIVIAL_ATTR_PRINTER(Threadgroup, threadgroup)
 +  TRIVIAL_ATTR_PRINTER(Thread, thread)
++  TRIVIAL_ATTR_PRINTER(Vertex, vertex)
++  TRIVIAL_ATTR_PRINTER(Fragment, fragment)
++  TRIVIAL_ATTR_PRINTER(VertexID, vertex_id)
++  TRIVIAL_ATTR_PRINTER(InstanceID, instance_id)
++  TRIVIAL_ATTR_PRINTER(ThreadIndexInSimdgroup, thread_index_in_simdgroup)
++  TRIVIAL_ATTR_PRINTER(SimdgroupIndexInThreadgroup, simdgroup_index_in_threadgroup)
  
  #undef TRIVIAL_ATTR_PRINTER
  
-@@ -5205,6 +5217,11 @@ public:
+@@ -5205,6 +5223,11 @@ public:
      printField(Attr->getAccess(), Label::always("access_level"));
      printFoot();
    }
@@ -451,7 +485,7 @@ index bc023c6e456..5bbeede44fe 100644
    void visitAlignmentAttr(AlignmentAttr *Attr, Label label) {
      printCommon(Attr, "alignment_attr", label);
      printField(Attr->getValue(), Label::always("value"));
-@@ -6918,6 +6935,13 @@ namespace {
+@@ -6918,6 +6941,13 @@ namespace {
        printFoot();
      }
  
@@ -668,7 +702,7 @@ index b38bb4fb2d8..ee1696808c4 100644
      if (auto parent = ty->getParent())
        return doIt(parent);
 diff --git a/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift b/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
-index 59ea9c4e31a..bedc6d9c8e7 100644
+index 59ea9c4e31a..6322ff619f6 100644
 --- a/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
 +++ b/lib/ASTGen/Sources/ASTGen/DeclAttrs.swift
 @@ -140,6 +140,11 @@ extension ASTGenVisitor {
@@ -683,7 +717,7 @@ index 59ea9c4e31a..bedc6d9c8e7 100644
        case .Derivative:
          return handle(self.generateDerivativeAttr(attribute: node)?.asDeclAttribute)
        case .Differentiable:
-@@ -241,6 +246,18 @@ extension ASTGenVisitor {
+@@ -241,6 +246,24 @@ extension ASTGenVisitor {
          .AddressableForDependencies,
          .AlwaysEmitConformanceMetadata,
          .AlwaysEmitIntoClient,
@@ -699,6 +733,12 @@ index 59ea9c4e31a..bedc6d9c8e7 100644
 +        .Constant,
 +        .Threadgroup,
 +        .Thread,
++        .Vertex,
++        .Fragment,
++        .VertexID,
++        .InstanceID,
++        .ThreadIndexInSimdgroup,
++        .SimdgroupIndexInThreadgroup,
          .AtReasync,
          .AtRethrows,
          .Borrowed,
@@ -817,7 +857,7 @@ index 227a45c6b3e..8d3c664c822 100644
      countStatsPostSILOpt(*stats, *silModule);
  
 diff --git a/lib/FrontendTool/FrontendTool.cpp b/lib/FrontendTool/FrontendTool.cpp
-index bbc2d990404..4adfe9fbd2d 100644
+index bbc2d990404..9cd0e3fc89a 100644
 --- a/lib/FrontendTool/FrontendTool.cpp
 +++ b/lib/FrontendTool/FrontendTool.cpp
 @@ -96,6 +96,7 @@
@@ -841,7 +881,7 @@ index bbc2d990404..4adfe9fbd2d 100644
  
  using namespace swift;
  
-@@ -2148,6 +2152,337 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
+@@ -2148,6 +2152,443 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
    Instance.freeASTContext();
  }
  
@@ -947,22 +987,15 @@ index bbc2d990404..4adfe9fbd2d 100644
 +static std::string rewriteAIRToTypedPointers(StringRef textRef) {
 +  std::string text = textRef.str();
 +
-+  // Only reconstruct typed pointers when the module needs them. Opaque pointers
-+  // work for plain device-buffer and texture kernels, but two things force the
-+  // driver's back-end down a path that needs the whole module typed:
-+  //   (a) a program-scope constant-address-space global (`addrspace(2) constant`,
-+  //       e.g. `let table: InlineArray<N,Float> = [...]`); and
-+  //   (b) a SIMD-group intrinsic (`air.simd_*` reductions/shuffles, or the
-+  //       `air.simdgroup_matrix_*` family) — the driver's bitcode upgrader for
-+  //       these rejects an opaque module with "Failed to upgrade function
-+  //       bitcode" (verified against the real metal compiler's output, which is
-+  //       fully typed). `@air.simd` covers both prefixes.
-+  // Typing must be all-or-nothing — a half-typed module (e.g. typed loads +
-+  // opaque `air.*` intrinsic operands) is rejected by metal-as — so leave
-+  // modules that need neither fully opaque (see docs/emit-air.md + docs/textures.md).
-+  bool hasConstantGlobal = text.find("addrspace(2) constant") != std::string::npos;
-+  bool hasSIMDIntrinsic = text.find("@air.simd") != std::string::npos;
-+  if (!hasConstantGlobal && !hasSIMDIntrinsic)
++  // Always reconstruct typed pointers for a GPU module. Earlier driver versions
++  // accepted a plain opaque device-buffer kernel and only needed typed pointers
++  // for constant globals / air.* intrinsics / graphics stages; the current
++  // macOS AGX driver rejects *any* opaque-pointer AIR module with "Failed to
++  // upgrade function bitcode", so typing is unconditional. (Typing is still
++  // all-or-nothing — a half-typed module is rejected by metal-as.) A module
++  // with no function to type passes through unchanged. See docs/emit-air.md.
++  if (text.find("\ndefine ") == std::string::npos &&
++      text.rfind("define ", 0) != 0)
 +    return text;
 +
 +  std::vector<std::string> lines;
@@ -1004,6 +1037,11 @@ index bbc2d990404..4adfe9fbd2d 100644
 +                      R"( \S+, ptr(?: addrspace\(\d+\))? (%[\w.]+))");
 +  std::regex reGepP(
 +      R"(getelementptr(?: inbounds)? (%[\w".$]+|\[[^\]]+\]|<[^>]+>|\w+), ptr(?: addrspace\(\d+\))? (%[\w.]+|@[\w".$]+))");
++  // A GEP's *result* points at its (flattened) element type — needed to type a
++  // pointer that is produced by a GEP and then handed straight to an intrinsic
++  // (e.g. `&bins[i]` passed to air.atomic.*), never loaded/stored locally.
++  std::regex reGepResP(
++      R"(^\s*(%[\w.]+) = getelementptr(?: inbounds)? (%[\w".$]+|\[[^\]]+\]|<[^>]+>|\w+), ptr)");
 +  for (auto &l : lines) {
 +    std::smatch m;
 +    if (std::regex_search(l, m, reLoadP))
@@ -1013,12 +1051,51 @@ index bbc2d990404..4adfe9fbd2d 100644
 +    if (std::regex_search(l, m, reGepP))
 +      if (!pointee.count(m[2].str()))
 +        pointee[m[2].str()] = airFlattenType(m[1].str(), tds);
++    if (std::regex_search(l, m, reGepResP))
++      if (!pointee.count(m[1].str()))
++        pointee[m[1].str()] = airFlattenType(m[2].str(), tds);
++  }
++
++  // Typed parameter list for each `air.*` intrinsic, recovered from its call
++  // sites: a pointer operand `ptr addrspace(N) %x` becomes `<pointee> addrspace(N)*`
++  // (i8 if unknown). The declaration is then retyped to match, so both the call
++  // and the declaration agree — the current driver rejects an opaque intrinsic
++  // pointer operand ("Failed to upgrade function bitcode").
++  std::map<std::string, std::vector<std::string>> airParamTys;
++  std::regex reCallSig(R"(^\s*(?:%[\w.]+ = )?(?:tail )?call .*?@(air\.[\w".$]+)\((.*)\)[^)]*$)");
++  // A pointer operand, possibly carrying parameter attributes between the type
++  // and the value (e.g. `ptr nonnull %cur`, `ptr noundef %x`): group 1 is the
++  // address space, group 2 the attributes (kept), group 3 the value.
++  std::regex rePtrOperand(
++      R"(^ptr( addrspace\(\d+\))?((?: [a-z_]+(?:\([^)]*\))?)*) (%[\w.]+)$)");
++  for (auto &l : lines) {
++    std::smatch m;
++    if (!std::regex_match(l, m, reCallSig)) continue;
++    std::string callee = m[1].str();
++    std::vector<std::string> args = airSplitTop(m[2].str());
++    std::vector<std::string> tys;
++    for (auto &a : args) {
++      std::string at = airTrim(a);
++      std::smatch pm;
++      if (std::regex_match(at, pm, rePtrOperand)) {
++        std::string as = pm[1].str(), val = pm[3].str();
++        std::string pt = pointee.count(val) ? pointee[val] : std::string("i8");
++        tys.push_back(pt + as + "*");
++      } else {
++        tys.push_back(""); // non-pointer: leave the declaration's type as-is
++      }
++    }
++    airParamTys[callee] = tys;
 +  }
 +
 +  // kernel name -> typed signature "void (p1, p2, ...)".
 +  std::map<std::string, std::string> ksig;
 +
-+  std::regex reDef(R"(^(define \S+ @([\w".$]+)\()(.*)(\) #\d+.*)$)");
++  // The return type may be a multi-token vector (`<4 x float>`, for a @Vertex /
++  // @Fragment stage) and may carry return attributes (`noundef`), so capture the
++  // whole "define <ret-part> @name(" head non-greedily rather than a single
++  // \S+ return token.
++  std::regex reDef(R"(^(define )(.*?) @([\w".$]+)\((.*)(\) #\d+.*)$)");
 +  std::regex reParam(R"(ptr( addrspace\(\d+\))?(.*) (%[\w.]+)$)");
 +  std::regex reGlobalDecl(
 +      R"(^((@[\w".$]+) = .*?addrspace\((\d+)\) constant )(%[\w".$]+|\[[^\]]+\]|<[^>]+>) (.+?)(, align \d+)$)");
@@ -1029,6 +1106,10 @@ index bbc2d990404..4adfe9fbd2d 100644
 +  std::regex reStore(R"(^(\s*)store )" + TY +
 +                     R"( (\S+), ptr( addrspace\(\d+\))? (%[\w.]+|@[\w".$]+)(, .*)$)");
 +  std::regex reKernelMD(R"(^(!\d+ = !\{)ptr (@([\w".$]+))(,.*)$)");
++  // A call to / declaration of an `air.*` intrinsic — for typing its pointer
++  // operands/params.
++  std::regex reCallLine(R"(^(\s*(?:%[\w.]+ = )?(?:tail )?call .*?@)(air\.[\w".$]+)(\()(.*)(\).*)$)");
++  std::regex reDeclLine(R"(^(declare .*?@)(air\.[\w".$]+)(\()(.*)(\).*)$)");
 +
 +  std::string out;
 +  for (auto &line : lines) {
@@ -1036,8 +1117,9 @@ index bbc2d990404..4adfe9fbd2d 100644
 +
 +    // Function signature.
 +    if (std::regex_match(line, m, reDef)) {
-+      std::string kname = m[2].str();
-+      std::vector<std::string> params = airSplitTop(m[3].str());
++      std::string retPart = m[2].str();     // return attrs + type, e.g. "noundef <4 x float>"
++      std::string kname = m[3].str();
++      std::vector<std::string> params = airSplitTop(m[4].str());
 +      std::string newParams, sig;
 +      for (size_t i = 0; i < params.size(); ++i) {
 +        std::smatch pm;
@@ -1065,8 +1147,35 @@ index bbc2d990404..4adfe9fbd2d 100644
 +        newParams += np;
 +        sig += st;
 +      }
-+      ksig[kname] = "void (" + sig + ")";
-+      out += m[1].str() + newParams + m[4].str() + "\n";
++      // The function-pointer signature needs the real return type. Strip any
++      // leading return attributes (noundef, signext, dereferenceable(...), …)
++      // from retPart; what remains is the type (`void` for a compute kernel,
++      // `<4 x float>` for a vertex/fragment stage).
++      std::string retType = retPart;
++      {
++        static const char *attrKw[] = {"noundef", "signext", "zeroext", "inreg",
++                                       "noalias", "nonnull", "returned",
++                                       "dso_local", "nofpclass"};
++        bool stripped = true;
++        while (stripped) {
++          stripped = false;
++          size_t sp = retType.find(' ');
++          std::string first = retType.substr(0, sp == std::string::npos
++                                                    ? retType.size() : sp);
++          bool isAttr = first.rfind("dereferenceable", 0) == 0 ||
++                        first.rfind("range(", 0) == 0 ||
++                        first.rfind("align", 0) == 0;
++          for (const char *kw : attrKw)
++            if (first == kw) isAttr = true;
++          if (isAttr && sp != std::string::npos) {
++            retType = retType.substr(sp + 1);
++            stripped = true;
++          }
++        }
++      }
++      ksig[kname] = retType + " (" + sig + ")";
++      out += m[1].str() + retPart + " @" + kname + "(" + newParams +
++             m[5].str() + "\n";
 +      continue;
 +    }
 +
@@ -1114,6 +1223,43 @@ index bbc2d990404..4adfe9fbd2d 100644
 +    if (std::regex_match(line, m, reKernelMD) && ksig.count(m[3].str())) {
 +      out += m[1].str() + ksig[m[3].str()] + "* " + m[2].str() + m[4].str() +
 +             "\n";
++      continue;
++    }
++
++    // Call to an air.* intrinsic: type each `ptr addrspace(N) %x` operand.
++    if (std::regex_match(line, m, reCallLine)) {
++      std::vector<std::string> args = airSplitTop(m[4].str());
++      std::string rebuilt;
++      for (size_t i = 0; i < args.size(); ++i) {
++        std::string at = airTrim(args[i]);
++        std::smatch pm;
++        if (std::regex_match(at, pm, rePtrOperand)) {
++          std::string as = pm[1].str(), attrs = pm[2].str(), val = pm[3].str();
++          std::string pt = pointee.count(val) ? pointee[val] : std::string("i8");
++          at = pt + as + "*" + attrs + " " + val;
++        }
++        if (i) rebuilt += ", ";
++        rebuilt += at;
++      }
++      out += m[1].str() + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
++      continue;
++    }
++
++    // Declaration of an air.* intrinsic: retype its pointer params to match the
++    // typed call operands recorded above.
++    if (std::regex_match(line, m, reDeclLine) && airParamTys.count(m[2].str())) {
++      const auto &tys = airParamTys[m[2].str()];
++      std::vector<std::string> params = airSplitTop(m[4].str());
++      std::string rebuilt;
++      for (size_t i = 0; i < params.size(); ++i) {
++        std::string pt = airTrim(params[i]);
++        if (i < tys.size() && !tys[i].empty() &&
++            std::regex_match(pt, std::regex(R"(ptr( addrspace\(\d+\))?)")))
++          pt = tys[i];
++        if (i) rebuilt += ", ";
++        rebuilt += pt;
++      }
++      out += m[1].str() + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
 +      continue;
 +    }
 +
@@ -1179,7 +1325,7 @@ index bbc2d990404..4adfe9fbd2d 100644
  static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
                           llvm::Module *IRModule,
                           llvm::GlobalVariable *HashGlobal) {
-@@ -2174,10 +2509,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
+@@ -2174,10 +2615,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
      return true;
  
    // Now that we have a single IR Module, hand it over to performLLVM.
@@ -1399,7 +1545,7 @@ index aea347284a3..fc8125b7c05 100644
      return convertTupleType(cast<TupleType>(ty));
    case TypeKind::Function:
 diff --git a/lib/IRGen/IRGen.cpp b/lib/IRGen/IRGen.cpp
-index 5dd214df8f0..dc6d6cfe412 100644
+index 5dd214df8f0..9562c968c47 100644
 --- a/lib/IRGen/IRGen.cpp
 +++ b/lib/IRGen/IRGen.cpp
 @@ -60,6 +60,7 @@
@@ -1410,7 +1556,7 @@ index 5dd214df8f0..dc6d6cfe412 100644
  #include "llvm/IR/LLVMContext.h"
  #include "llvm/IR/LegacyPassManager.h"
  #include "llvm/IR/Module.h"
-@@ -362,6 +363,427 @@ void diagnoseSync(
+@@ -362,6 +363,566 @@ void diagnoseSync(
    Diags.diagnose(Loc, ID, std::move(Args)...);
  }
  
@@ -1471,6 +1617,21 @@ index 5dd214df8f0..dc6d6cfe412 100644
 +  if (swiftType == "SIMD4<Int32>") return "int4";
 +  if (swiftType == "Int32") return "int";
 +  return "uint"; // UInt32 and default
++}
++
++/// AIR vector type name for a graphics value (vertex [[position]], a fragment
++/// [[color(n)]] / render target). Float-based, unlike airBuiltinTypeName.
++static llvm::StringRef airVectorTypeName(llvm::StringRef swiftType) {
++  swiftType = swiftType.trim();
++  if (swiftType == "SIMD4<Float>") return "float4";
++  if (swiftType == "SIMD3<Float>") return "float3";
++  if (swiftType == "SIMD2<Float>") return "float2";
++  if (swiftType == "Float") return "float";
++  if (swiftType == "SIMD4<Float16>") return "half4";
++  if (swiftType == "SIMD3<Float16>") return "half3";
++  if (swiftType == "SIMD2<Float16>") return "half2";
++  if (swiftType == "Float16") return "half";
++  return "float4"; // position / color default
 +}
 +
 +/// snake_case AIR name for a thread/grid builtin marker (threadPositionInGrid ->
@@ -1646,12 +1807,75 @@ index 5dd214df8f0..dc6d6cfe412 100644
 +
 +  // (3) Convert !swiftgpu.kernels into the AIR entry-point + argument metadata.
 +  if (auto *swiftgpu = M.getNamedMetadata("swiftgpu.kernels")) {
-+    llvm::SmallVector<llvm::Metadata *, 4> airKernels;
++    llvm::SmallVector<llvm::Metadata *, 4> airKernels;    // @Compute  -> air.kernel
++    llvm::SmallVector<llvm::Metadata *, 4> airVertices;   // @Vertex   -> air.vertex
++    llvm::SmallVector<llvm::Metadata *, 4> airFragments;  // @Fragment -> air.fragment
 +    for (auto *kn : swiftgpu->operands()) {
 +      if (kn->getNumOperands() < 3) continue;
 +      auto *fnMD = llvm::dyn_cast<llvm::ValueAsMetadata>(kn->getOperand(0));
 +      auto *argsMD = llvm::dyn_cast<llvm::MDNode>(kn->getOperand(2));
 +      if (!fnMD || !argsMD) continue;
++      llvm::StringRef stage = mdStr(kn->getOperand(1));
++      llvm::StringRef retType =
++          kn->getNumOperands() >= 4 ? mdStr(kn->getOperand(3)) : "";
++
++      // --- Graphics: @Vertex -> air.vertex {fn, outputs, inputs} -----------
++      // Inputs are the vertex-stage builtins (vertex_id/instance_id) and any
++      // pull-model device/constant buffers; the single output is the return
++      // value, the clip-space [[position]]. (stage_in attribute structs and
++      // interpolated varyings are a documented follow-up.)
++      if (stage == "vertex" || stage == "fragment") {
++        llvm::SmallVector<llvm::Metadata *, 4> inputs;
++        int bufferIndex = 0;
++        for (auto &argOp : argsMD->operands()) {
++          auto *a = llvm::dyn_cast<llvm::MDNode>(argOp.get());
++          if (!a || a->getNumOperands() < 5) continue;
++          int pos = mdInt(a->getOperand(0));
++          llvm::StringRef role = mdStr(a->getOperand(1));
++          int slot = mdInt(a->getOperand(2));
++          llvm::StringRef type = mdStr(a->getOperand(3));
++          llvm::StringRef name = mdStr(a->getOperand(4));
++          if (role == "vertexID" || role == "instanceID") {
++            inputs.push_back(llvm::MDNode::get(Ctx, {
++              mdi(Ctx, pos),
++              mds(Ctx, role == "vertexID" ? "air.vertex_id" : "air.instance_id"),
++              mds(Ctx, "air.arg_type_name"), mds(Ctx, "uint"),
++              mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++          } else if (role == "buffer") {
++            bool isMutable = false; unsigned as = 1; std::string pointee;
++            parsePointerType(type, isMutable, as, pointee);
++            auto [airName, size, align] = airTypeForPointee(pointee);
++            int index = slot >= 0 ? slot : bufferIndex++;
++            inputs.push_back(llvm::MDNode::get(Ctx, {
++              mdi(Ctx, pos), mds(Ctx, "air.buffer"),
++              mds(Ctx, "air.location_index"), mdi(Ctx, index), mdi(Ctx, 1),
++              mds(Ctx, isMutable ? "air.read_write" : "air.read"),
++              mds(Ctx, "air.address_space"), mdi(Ctx, (int)as),
++              mds(Ctx, "air.arg_type_size"), mdi(Ctx, (int)size),
++              mds(Ctx, "air.arg_type_align_size"), mdi(Ctx, (int)align),
++              mds(Ctx, "air.arg_type_name"), mds(Ctx, airName),
++              mds(Ctx, "air.arg_name"), mds(Ctx, name)}));
++          }
++        }
++        if (stage == "vertex") {
++          llvm::Metadata *posOut = llvm::MDNode::get(Ctx, {
++            mds(Ctx, "air.position"),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, airVectorTypeName(retType)),
++            mds(Ctx, "air.arg_name"), mds(Ctx, "position")});
++          airVertices.push_back(llvm::MDNode::get(Ctx, {
++            fnMD, llvm::MDNode::get(Ctx, {posOut}),
++            llvm::MDNode::get(Ctx, inputs)}));
++        } else {
++          // Fragment output: the return value is [[color(0)]] / render target 0.
++          llvm::Metadata *rt0 = llvm::MDNode::get(Ctx, {
++            mds(Ctx, "air.render_target"), mdi(Ctx, 0), mdi(Ctx, 0),
++            mds(Ctx, "air.arg_type_name"), mds(Ctx, airVectorTypeName(retType))});
++          airFragments.push_back(llvm::MDNode::get(Ctx, {
++            fnMD, llvm::MDNode::get(Ctx, {rt0}),
++            llvm::MDNode::get(Ctx, inputs)}));
++        }
++        continue;
++      }
 +
 +      llvm::SmallVector<llvm::Metadata *, 8> airArgs;
 +      // Threadgroup (addrspace 3) buffers are bound in their own 0-based index
@@ -1740,6 +1964,27 @@ index 5dd214df8f0..dc6d6cfe412 100644
 +      for (auto *k : airKernels)
 +        airKernel->addOperand(llvm::cast<llvm::MDNode>(k));
 +    }
++    if (!airVertices.empty()) {
++      auto *nv = M.getOrInsertNamedMetadata("air.vertex");
++      for (auto *k : airVertices)
++        nv->addOperand(llvm::cast<llvm::MDNode>(k));
++    }
++    if (!airFragments.empty()) {
++      auto *nf = M.getOrInsertNamedMetadata("air.fragment");
++      for (auto *k : airFragments)
++        nf->addOperand(llvm::cast<llvm::MDNode>(k));
++    }
++    // Graphics stages need air.compile_options — the driver's render-pipeline
++    // path expects it (compute kernels load fine without it, so it is only
++    // added when a vertex/fragment stage is present).
++    if ((!airVertices.empty() || !airFragments.empty()) &&
++        !M.getNamedMetadata("air.compile_options")) {
++      auto *co = M.getOrInsertNamedMetadata("air.compile_options");
++      for (const char *opt : {"air.compile.denorms_disable",
++                              "air.compile.fast_math_enable",
++                              "air.compile.framebuffer_fetch_enable"})
++        co->addOperand(llvm::MDNode::get(Ctx, {mds(Ctx, opt)}));
++    }
 +  }
 +
 +  // (3b) Strip the "PIC Level" module flag. Position-independent code is
@@ -1805,6 +2050,46 @@ index 5dd214df8f0..dc6d6cfe412 100644
 +      gv->eraseFromParent();
 +  }
 +
++  // (3d) Drop unused `air.*` intrinsic declarations. A package (SIMDGroup,
++  // Atomics, Textures) declares the whole family via @_silgen_name, but a kernel
++  // only calls a few; the rest survive as unreferenced declarations. Once the
++  // module is typed (the driver now requires it), a stray *opaque* `air.*`
++  // declaration makes the module half-typed and metal-as rejects it ("expected
++  // type"). They are dead anyway, so erase every `air.*` declaration with no
++  // uses.
++  {
++    llvm::SmallVector<llvm::Function *, 16> deadDecls;
++    for (auto &F : M)
++      if (F.isDeclaration() && F.use_empty() && F.getName().starts_with("air."))
++        deadDecls.push_back(&F);
++    for (auto *F : deadDecls)
++      F->eraseFromParent();
++  }
++
++  // (3e) Strip `llvm.lifetime.*` markers (emitted around allocas, e.g. the CAS
++  // loop's `expected` slot or a sampler temporary). They are optimizer hints
++  // with no AIR meaning, and their bare `ptr` operand is invalid in the typed
++  // module metal-as now parses ("expected type").
++  {
++    llvm::SmallVector<llvm::Instruction *, 16> deadCalls;
++    for (auto &F : M)
++      for (auto &BB : F)
++        for (auto &I : BB)
++          if (auto *ci = llvm::dyn_cast<llvm::CallInst>(&I))
++            if (auto *callee = ci->getCalledFunction())
++              if (callee->getName().starts_with("llvm.lifetime."))
++                deadCalls.push_back(&I);
++    for (auto *I : deadCalls)
++      I->eraseFromParent();
++    llvm::SmallVector<llvm::Function *, 4> deadLLVM;
++    for (auto &F : M)
++      if (F.isDeclaration() && F.use_empty() &&
++          F.getName().starts_with("llvm.lifetime."))
++        deadLLVM.push_back(&F);
++    for (auto *F : deadLLVM)
++      F->eraseFromParent();
++  }
++
 +  // (4) Module-level AIR facts.
 +  auto flag = [&](const char *n, int v) {
 +    M.addModuleFlag(llvm::Module::Max, n, (uint32_t)v);
@@ -1838,7 +2123,7 @@ index 5dd214df8f0..dc6d6cfe412 100644
  void swift::performLLVMOptimizations(
      const IRGenOptions &Opts, DiagnosticEngine &Diags,
      llvm::sys::Mutex *DiagMutex, llvm::Module *Module,
-@@ -386,6 +808,16 @@ void swift::performLLVMOptimizations(
+@@ -386,6 +947,16 @@ void swift::performLLVMOptimizations(
      PTO.LoopInterleaving = true;
      PTO.LoopVectorization = true;
      PTO.SLPVectorization = true;
@@ -1855,7 +2140,7 @@ index 5dd214df8f0..dc6d6cfe412 100644
      PTO.MergeFunctions = !Opts.DisableLLVMMergeFunctions;
      // Splitting trades code size to enhance memory locality, avoid in -Osize.
      DoHotColdSplit = Opts.EnableHotColdSplit && !Opts.optimizeForSize();
-@@ -575,6 +1007,11 @@ void swift::performLLVMOptimizations(
+@@ -575,6 +1146,11 @@ void swift::performLLVMOptimizations(
    if (Opts.PrintInlineTree)
      MPM.addPass(InlineTreePrinterPass());
  
@@ -1880,7 +2165,7 @@ index 4c53f43f78d..96e2e45f77e 100644
      case TypeKind::ErrorUnion:
      case TypeKind::Placeholder:
 diff --git a/lib/IRGen/IRGenModule.cpp b/lib/IRGen/IRGenModule.cpp
-index a9c438fc430..c8448ac3a99 100644
+index a9c438fc430..576e593cc9f 100644
 --- a/lib/IRGen/IRGenModule.cpp
 +++ b/lib/IRGen/IRGenModule.cpp
 @@ -23,6 +23,8 @@
@@ -1900,7 +2185,7 @@ index a9c438fc430..c8448ac3a99 100644
    emitUsedConditionals();
    cleanupClangCodeGenMetadata();
  
-@@ -2218,6 +2221,99 @@ bool IRGenModule::finalize() {
+@@ -2218,6 +2221,122 @@ bool IRGenModule::finalize() {
    return true;
  }
  
@@ -1933,7 +2218,18 @@ index a9c438fc430..c8448ac3a99 100644
 +    if (!fd)
 +      if (auto *dc = f.getDeclContext())
 +        fd = dyn_cast_or_null<FuncDecl>(dc);
-+    if (!fd || !fd->getAttrs().hasAttribute<ComputeAttr>())
++    // A GPU entry point is a @Compute kernel or a @Vertex / @Fragment graphics
++    // stage. The stage string travels through !swiftgpu.kernels to the AIR
++    // normalizer, which lowers compute -> air.kernel and vertex/fragment ->
++    // air.vertex / air.fragment.
++    const char *stage = nullptr;
++    if (fd && fd->getAttrs().hasAttribute<ComputeAttr>())
++      stage = "compute";
++    else if (fd && fd->getAttrs().hasAttribute<VertexAttr>())
++      stage = "vertex";
++    else if (fd && fd->getAttrs().hasAttribute<FragmentAttr>())
++      stage = "fragment";
++    if (!stage)
 +      continue;
 +
 +    llvm::Function *llvmFn = getAddrOfSILFunction(&f, NotForDefinition);
@@ -1961,6 +2257,14 @@ index a9c438fc430..c8448ac3a99 100644
 +        role = "threadsPerThreadgroup";
 +      else if (p->getAttrs().hasAttribute<ThreadgroupsPerGridAttr>())
 +        role = "threadgroupsPerGrid";
++      else if (p->getAttrs().hasAttribute<VertexIDAttr>())
++        role = "vertexID";
++      else if (p->getAttrs().hasAttribute<InstanceIDAttr>())
++        role = "instanceID";
++      else if (p->getAttrs().hasAttribute<ThreadIndexInSimdgroupAttr>())
++        role = "threadIndexInSimdgroup";
++      else if (p->getAttrs().hasAttribute<SimdgroupIndexInThreadgroupAttr>())
++        role = "simdgroupIndexInThreadgroup";
 +
 +      // swift-metal: a texture handle (Texture2D/Texture3D/Write*/ReadWrite*
 +      // from the textures package) becomes an air.texture argument, not an
@@ -1984,9 +2288,13 @@ index a9c438fc430..c8448ac3a99 100644
 +                mdStr(nameStr)}));
 +    }
 +
++    // Operand 3 carries the Swift result type (e.g. "SIMD4<Float>") so the
++    // normalizer can build the stage's output metadata: air.position for a
++    // vertex, air.render_target for a fragment. Void for compute.
 +    kernels.push_back(llvm::MDTuple::get(
-+        ctx, {llvm::ValueAsMetadata::get(llvmFn), mdStr("compute"),
-+              llvm::MDTuple::get(ctx, args)}));
++        ctx, {llvm::ValueAsMetadata::get(llvmFn), mdStr(stage),
++              llvm::MDTuple::get(ctx, args),
++              mdStr(fd->getResultInterfaceType().getString())}));
 +  }
 +
 +  if (kernels.empty())
@@ -2634,10 +2942,10 @@ index 6999578454f..ee553fc88d3 100644
            lookupBaseType->is<PackType>()) {
          auto *proto = assocType->getProtocol();
 diff --git a/lib/Sema/MiscDiagnostics.cpp b/lib/Sema/MiscDiagnostics.cpp
-index 70a68adc308..e85f4d52081 100644
+index 70a68adc308..b2034651e71 100644
 --- a/lib/Sema/MiscDiagnostics.cpp
 +++ b/lib/Sema/MiscDiagnostics.cpp
-@@ -4703,6 +4703,123 @@ performTopLevelDeclDiagnostics(TopLevelCodeDecl *TLCD) {
+@@ -4703,6 +4703,133 @@ performTopLevelDeclDiagnostics(TopLevelCodeDecl *TLCD) {
  }
  
  /// Perform diagnostics for func/init/deinit declarations.
@@ -2727,14 +3035,20 @@ index 70a68adc308..e85f4d52081 100644
 +  }
 +};
 +
-+/// Signature + body checks for a `@Compute` kernel.
++/// Signature + body checks for a GPU entry point (`@Compute` kernel or a
++/// `@Vertex` / `@Fragment` graphics stage).
 +static void checkGPUKernel(AbstractFunctionDecl *AFD) {
-+  if (!AFD->getAttrs().hasAttribute<ComputeAttr>())
++  bool isCompute = AFD->getAttrs().hasAttribute<ComputeAttr>();
++  bool isVertex = AFD->getAttrs().hasAttribute<VertexAttr>();
++  bool isFragment = AFD->getAttrs().hasAttribute<FragmentAttr>();
++  if (!isCompute && !isVertex && !isFragment)
 +    return;
 +  auto &Diags = AFD->getASTContext().Diags;
-+  StringRef noun = "kernel";
++  StringRef noun = isVertex ? "vertex shader"
++                 : isFragment ? "fragment shader"
++                              : "kernel";
 +
-+  // Effects the GPU can't provide.
++  // Effects the GPU can't provide (all stages).
 +  if (AFD->hasThrows())
 +    Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_effect, noun, AFD->getName(),
 +                   "throws");
@@ -2742,12 +3056,16 @@ index 70a68adc308..e85f4d52081 100644
 +    Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_effect, noun, AFD->getName(),
 +                   "async");
 +
-+  // A compute kernel returns Void (results go through device buffers).
-+  if (auto *fd = dyn_cast<FuncDecl>(AFD)) {
-+    Type result = fd->getResultInterfaceType();
-+    if (result && !result->hasError() && !result->isVoid())
-+      Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_nonvoid, noun,
-+                     AFD->getName());
++  // A compute kernel returns Void (results go through device buffers); a
++  // vertex returns its [[position]] and a fragment its [[color]], so the
++  // non-void check is compute-only.
++  if (isCompute) {
++    if (auto *fd = dyn_cast<FuncDecl>(AFD)) {
++      Type result = fd->getResultInterfaceType();
++      if (result && !result->hasError() && !result->isVoid())
++        Diags.diagnose(AFD->getLoc(), diag::gpu_kernel_nonvoid, noun,
++                       AFD->getName());
++    }
 +  }
 +
 +  if (auto *body = AFD->getBody()) {
@@ -2761,7 +3079,7 @@ index 70a68adc308..e85f4d52081 100644
  void swift::performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD) {
    // Don't produce these diagnostics for implicitly generated code.
    if (AFD->getLoc().isInvalid() || AFD->isImplicit() || AFD->isInvalid())
-@@ -4717,6 +4834,9 @@ void swift::performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD) {
+@@ -4717,6 +4844,9 @@ void swift::performAbstractFuncDeclDiagnostics(AbstractFunctionDecl *AFD) {
      AFD->walk(checker);
    }
  
@@ -2787,10 +3105,10 @@ index 4e3db31bbcd..6ed648d7018 100644
      auto tupleTy = cast<TupleType>(canType);
      if (tupleTy->getNumElements() == 0)
 diff --git a/lib/Sema/TypeCheckAttr.cpp b/lib/Sema/TypeCheckAttr.cpp
-index 9cbb6b9e032..6065f982d37 100644
+index 9cbb6b9e032..821eede393b 100644
 --- a/lib/Sema/TypeCheckAttr.cpp
 +++ b/lib/Sema/TypeCheckAttr.cpp
-@@ -179,6 +179,20 @@ public:
+@@ -179,6 +179,26 @@ public:
    bool visitDeclAttribute(DeclAttribute *A) = delete;
  
  #define IGNORED_ATTR(X) void visit##X##Attr(X##Attr *) {}
@@ -2808,6 +3126,12 @@ index 9cbb6b9e032..6065f982d37 100644
 +  IGNORED_ATTR(Constant)
 +  IGNORED_ATTR(Threadgroup)
 +  IGNORED_ATTR(Thread)
++  IGNORED_ATTR(Vertex)
++  IGNORED_ATTR(Fragment)
++  IGNORED_ATTR(VertexID)
++  IGNORED_ATTR(InstanceID)
++  IGNORED_ATTR(ThreadIndexInSimdgroup)
++  IGNORED_ATTR(SimdgroupIndexInThreadgroup)
    IGNORED_ATTR(AlwaysEmitIntoClient)
    IGNORED_ATTR(HasInitialValue)
    IGNORED_ATTR(HasHiddenStoredProperties)
@@ -2880,10 +3204,10 @@ index ff90e114c7f..307bab36b9d 100644
  
    case DeclKind::Func:
 diff --git a/lib/Sema/TypeCheckDeclOverride.cpp b/lib/Sema/TypeCheckDeclOverride.cpp
-index 50aef6de31b..49c45b50923 100644
+index 50aef6de31b..a3cfce5522e 100644
 --- a/lib/Sema/TypeCheckDeclOverride.cpp
 +++ b/lib/Sema/TypeCheckDeclOverride.cpp
-@@ -1596,6 +1596,19 @@ namespace  {
+@@ -1596,6 +1596,25 @@ namespace  {
      // Please keep these alphabetical.
      UNINTERESTING_ATTR(AccessControl)
      UNINTERESTING_ATTR(Alignment)
@@ -2900,6 +3224,12 @@ index 50aef6de31b..49c45b50923 100644
 +    UNINTERESTING_ATTR(Constant)
 +    UNINTERESTING_ATTR(Threadgroup)
 +    UNINTERESTING_ATTR(Thread)
++    UNINTERESTING_ATTR(Vertex)
++    UNINTERESTING_ATTR(Fragment)
++    UNINTERESTING_ATTR(VertexID)
++    UNINTERESTING_ATTR(InstanceID)
++    UNINTERESTING_ATTR(ThreadIndexInSimdgroup)
++    UNINTERESTING_ATTR(SimdgroupIndexInThreadgroup)
      UNINTERESTING_ATTR(AlwaysEmitIntoClient)
      UNINTERESTING_ATTR(NeverEmitIntoClient)
      UNINTERESTING_ATTR(Borrowed)
