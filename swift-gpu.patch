@@ -857,7 +857,7 @@ index 227a45c6b3e..8d3c664c822 100644
      countStatsPostSILOpt(*stats, *silModule);
  
 diff --git a/lib/FrontendTool/FrontendTool.cpp b/lib/FrontendTool/FrontendTool.cpp
-index bbc2d990404..9cd0e3fc89a 100644
+index bbc2d990404..e95c0217679 100644
 --- a/lib/FrontendTool/FrontendTool.cpp
 +++ b/lib/FrontendTool/FrontendTool.cpp
 @@ -96,6 +96,7 @@
@@ -881,7 +881,7 @@ index bbc2d990404..9cd0e3fc89a 100644
  
  using namespace swift;
  
-@@ -2148,6 +2152,443 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
+@@ -2148,6 +2152,538 @@ static void freeASTContextIfPossible(CompilerInstance &Instance) {
    Instance.freeASTContext();
  }
  
@@ -1056,6 +1056,36 @@ index bbc2d990404..9cd0e3fc89a 100644
 +        pointee[m[1].str()] = airFlattenType(m[2].str(), tds);
 +  }
 +
++  // Texture / sampler handles are opaque named structs, not byte pointers (a
++  // texture arg is `%struct._texture_2d_t addrspace(1)*`, a sampler
++  // `%struct._sampler_t addrspace(2)*`). Infer them from the `air.*_texture_Nd`
++  // / sampler intrinsic that consumes the pointer: in such a call every
++  // addrspace(1) pointer operand is that texture kind and every addrspace(2)
++  // one is a sampler; `air.get_*_sampler()` returns a sampler.
++  std::regex reAnyCall(
++      R"(^\s*(?:(%[\w.]+) = )?(?:tail )?call .*?@(air\.[\w".$]+)\((.*)\)[^)]*$)");
++  std::regex rePtrOp(R"(^ptr( addrspace\(\d+\))?(?: [a-z_]+(?:\([^)]*\))?)* (%[\w.]+)$)");
++  for (auto &l : lines) {
++    std::smatch m;
++    if (!std::regex_match(l, m, reAnyCall)) continue;
++    std::string res = m[1].str(), callee = m[2].str();
++    if (callee.find("sampler") != std::string::npos && !res.empty())
++      pointee[res] = "%struct._sampler_t"; // air.get_*_sampler() result
++    std::string texTy;
++    if (callee.find("texture_3d") != std::string::npos) texTy = "%struct._texture_3d_t";
++    else if (callee.find("texture_2d") != std::string::npos) texTy = "%struct._texture_2d_t";
++    else if (callee.find("texture_1d") != std::string::npos) texTy = "%struct._texture_1d_t";
++    else if (callee.find("texture_cube") != std::string::npos) texTy = "%struct._texture_cube_t";
++    if (texTy.empty()) continue;
++    for (auto &a : airSplitTop(m[3].str())) {
++      std::smatch pm; std::string at = airTrim(a);
++      if (!std::regex_match(at, pm, rePtrOp)) continue;
++      std::string as = pm[1].str(), val = pm[2].str();
++      if (as.find("addrspace(1)") != std::string::npos) pointee[val] = texTy;
++      else if (as.find("addrspace(2)") != std::string::npos) pointee[val] = "%struct._sampler_t";
++    }
++  }
++
 +  // Typed parameter list for each `air.*` intrinsic, recovered from its call
 +  // sites: a pointer operand `ptr addrspace(N) %x` becomes `<pointee> addrspace(N)*`
 +  // (i8 if unknown). The declaration is then retyped to match, so both the call
@@ -1106,6 +1136,8 @@ index bbc2d990404..9cd0e3fc89a 100644
 +  std::regex reStore(R"(^(\s*)store )" + TY +
 +                     R"( (\S+), ptr( addrspace\(\d+\))? (%[\w.]+|@[\w".$]+)(, .*)$)");
 +  std::regex reKernelMD(R"(^(!\d+ = !\{)ptr (@([\w".$]+))(,.*)$)");
++  std::regex reAlloca(
++      R"(^(\s*%[\w.]+ = alloca )(%[\w".$]+|\[[^\]]+\]|<[^>]+>|[\w]+)(,.*)$)");
 +  // A call to / declaration of an `air.*` intrinsic — for typing its pointer
 +  // operands/params.
 +  std::regex reCallLine(R"(^(\s*(?:%[\w.]+ = )?(?:tail )?call .*?@)(air\.[\w".$]+)(\()(.*)(\).*)$)");
@@ -1179,6 +1211,14 @@ index bbc2d990404..9cd0e3fc89a 100644
 +      continue;
 +    }
 +
++    // alloca: flatten the allocated type (a single-field wrapper struct like
++    // %Ts6UInt32V -> i32) so a slot used as i32* — e.g. the CAS loop's
++    // `expected` operand in examples/atomics — is type-consistent.
++    if (std::regex_match(line, m, reAlloca)) {
++      out += m[1].str() + airFlattenType(m[2].str(), tds) + m[3].str() + "\n";
++      continue;
++    }
++
 +    // Global constant declaration: flatten type + initializer.
 +    if (std::regex_match(line, m, reGlobalDecl)) {
 +      std::string ft = airFlattenType(m[4].str(), tds);
@@ -1199,8 +1239,25 @@ index bbc2d990404..9cd0e3fc89a 100644
 +               aspace + "* " + base + ", i64 0" + idxs + "\n";
 +      } else {
 +        std::string fstride = airFlattenType(stride, tds);
++        // The optimizer can build a mixed-type pointer chain — byte-offset
++        // `getelementptr i8` steps feeding a final `getelementptr i32` (manual
++        // multi-dimensional indexing, e.g. examples/grid3d). The base is then
++        // defined with one pointee (i8) but used here with another (i32); in a
++        // typed module metal-as rejects the mismatch. Bitcast the base first.
++        std::string gepBase = base;
++        if (!base.empty() && base[0] == '%') {
++          auto it = pointee.find(base);
++          if (it != pointee.end() && it->second != fstride) {
++            // A fresh name that starts with a letter — `%15.pbc` would be read
++            // as the numbered temporary %15 by metal-as.
++            std::string bc = "%pbc" + res.substr(1);
++            out += indent + bc + " = bitcast " + it->second + aspace + "* " +
++                   base + " to " + fstride + aspace + "*\n";
++            gepBase = bc;
++          }
++        }
 +        out += indent + res + " = getelementptr inbounds " + fstride + ", " +
-+               fstride + aspace + "* " + base + idxs + "\n";
++               fstride + aspace + "* " + gepBase + idxs + "\n";
 +      }
 +      continue;
 +    }
@@ -1241,7 +1298,16 @@ index bbc2d990404..9cd0e3fc89a 100644
 +        if (i) rebuilt += ", ";
 +        rebuilt += at;
 +      }
-+      out += m[1].str() + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
++      // air.get_*_sampler() returns a sampler: retype the `ptr addrspace(2)`
++      // return in the call prefix.
++      std::string prefix = m[1].str();
++      if (m[2].str().find("sampler") != std::string::npos) {
++        size_t p = prefix.rfind("ptr addrspace(2)");
++        if (p != std::string::npos)
++          prefix.replace(p, std::string("ptr addrspace(2)").size(),
++                         "%struct._sampler_t addrspace(2)*");
++      }
++      out += prefix + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
 +      continue;
 +    }
 +
@@ -1259,11 +1325,40 @@ index bbc2d990404..9cd0e3fc89a 100644
 +        if (i) rebuilt += ", ";
 +        rebuilt += pt;
 +      }
-+      out += m[1].str() + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
++      // Likewise retype a sampler-getter's `ptr addrspace(2)` return type.
++      std::string prefix = m[1].str();
++      if (m[2].str().find("sampler") != std::string::npos) {
++        size_t p = prefix.rfind("ptr addrspace(2)");
++        if (p != std::string::npos)
++          prefix.replace(p, std::string("ptr addrspace(2)").size(),
++                         "%struct._sampler_t addrspace(2)*");
++      }
++      out += prefix + m[2].str() + m[3].str() + rebuilt + m[5].str() + "\n";
 +      continue;
 +    }
 +
 +    out += line + "\n";
++  }
++
++  // Declare the opaque texture/sampler struct types introduced by the typing
++  // above (`%struct._texture_2d_t = type opaque`, …), inserted after the target
++  // triple so they precede first use.
++  {
++    std::string defs;
++    for (const char *n : {"%struct._texture_1d_t", "%struct._texture_2d_t",
++                          "%struct._texture_3d_t", "%struct._texture_cube_t",
++                          "%struct._sampler_t"})
++      if (out.find(n) != std::string::npos &&
++          out.find(std::string(n) + " = type opaque") == std::string::npos)
++        defs += std::string(n) + " = type opaque\n";
++    if (!defs.empty()) {
++      size_t p = out.find("target triple");
++      size_t eol = p == std::string::npos ? std::string::npos : out.find('\n', p);
++      if (eol != std::string::npos)
++        out.insert(eol + 1, "\n" + defs);
++      else
++        out = defs + out;
++    }
 +  }
 +
 +  if (!out.empty() && out.back() == '\n')
@@ -1325,7 +1420,7 @@ index bbc2d990404..9cd0e3fc89a 100644
  static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
                           llvm::Module *IRModule,
                           llvm::GlobalVariable *HashGlobal) {
-@@ -2174,10 +2615,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
+@@ -2174,10 +2710,25 @@ static bool generateCode(CompilerInstance &Instance, StringRef OutputFilename,
      return true;
  
    // Now that we have a single IR Module, hand it over to performLLVM.
